@@ -40,6 +40,7 @@ $v = $new.ToString()
 
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $R 'build-kit.ps1') | Out-Null
 if ($LASTEXITCODE) { throw 'build-kit.ps1 failed' }
+Write-Output ("STEP:build exe v" + (Get-Item (Join-Path $R 'Miles Installer and Updater.exe')).VersionInfo.FileVersion)
 
 $dist = Join-Path $R 'dist'
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
@@ -56,6 +57,7 @@ $latest = [ordered]@{
   url = "https://github.com/$Repo/releases/download/v$v/$zipName"
   sha256 = $sha; sig = $sig; notes = $Notes; published = (Get-Date -Format 'yyyy-MM-dd HH:mm')
 }
+Write-Output ("STEP:sign hash " + $sha.Substring(0, 12))
 $latestPath = Join-Path $dist 'latest.json'
 $latest | ConvertTo-Json | Set-Content $latestPath -Encoding ASCII
 
@@ -65,11 +67,14 @@ if (-not $DryRun) {
   git -C $R commit -m "kit v${v}: $Notes" | Out-Null
   git -C $R push origin HEAD 2>&1 | Out-Null
   if ($LASTEXITCODE) { throw 'git push failed' }
+  Write-Output ("STEP:push commit " + (git -C $R rev-parse --short HEAD))
   gh release create "v$v" $zip $latestPath --repo $Repo --title "Kit v$v" --notes $Notes --latest | Out-Null
   if ($LASTEXITCODE) { throw 'gh release create failed' }
+  Write-Output "STEP:release https://github.com/$Repo/releases/tag/v$v"
   for ($i = 0; $i -lt 6 -and $live -ne $v; $i++) {
     Start-Sleep -Seconds 3
     try { $live = (Invoke-RestMethod "https://github.com/$Repo/releases/latest/download/latest.json" -TimeoutSec 15).version } catch { }
   }
 }
+if (-not $DryRun) { if ($live -eq $v) { Write-Output "STEP:live LIVE v$v" } else { throw "GitHub still shows '$live', not v$v" } }
 [ordered]@{ ok = $true; version = $v; previous = $cur.ToString(); zip = $zip; sha256 = $sha; dryRun = [bool]$DryRun; liveVersion = $live } | ConvertTo-Json -Compress

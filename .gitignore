@@ -3,3 +3,5 @@
 dist/
 *.bak-*
 art-src/contact-sheet.png
+backups/
+*.last-save
