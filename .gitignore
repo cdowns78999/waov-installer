@@ -1,0 +1,5 @@
+# built files: the exe is rebuilt by build-kit.ps1 and ships in releases and zips, not in git
+*.exe
+dist/
+*.bak-*
+art-src/contact-sheet.png
