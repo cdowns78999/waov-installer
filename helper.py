@@ -120,24 +120,25 @@ def run_job(job):
 def main():
     print("WAOV installer helper: master", PS1)
     print("talking to", API)
-    # Low cost (Chad 2026-11-09): each call is one Netlify function run. The master is sent only when it changed
-    # (or every 10 minutes as a refresh), and the job check runs every 20 s, about 3 calls a minute while open.
-    last_snap, last_text = 0, None
-    while True:
+    # On demand (Chad 2026-11-09): no all-day polling. Start it when you want to use the tile; it sends the master once,
+    # watches for an approved plan every 20 s for 15 minutes, then closes itself. Each check is one Netlify function run.
+    SESSION = 15 * 60
+    end = time.time() + SESSION
+    try:
+        r = call("helper.snapshot", text=master())
+        print(f"[{datetime.datetime.now():%H:%M:%S}] master v{r.get('version')} sent. Watching for an approved plan for 15 minutes.")
+    except Exception as e:
+        print("waov.art not reachable:", e)
+    while time.time() < end:
         try:
-            text = master()
-            if text != last_text or time.time() - last_snap > 600:
-                r = call("helper.snapshot", text=text)
-                last_snap, last_text = time.time(), text
-                print(f"[{datetime.datetime.now():%H:%M:%S}] snapshot sent, master v{r.get('version')}")
             r = call("helper.next")
             if r.get("job"):
                 run_job(r["job"])
-                last_snap, last_text = time.time(), master()
+                end = time.time() + SESSION          # stay open another 15 minutes after a job
         except Exception as e:
             print(f"[{datetime.datetime.now():%H:%M:%S}] waov.art not reachable: {e}")
         time.sleep(20)
-
+    print("15 minutes are up: helper closed (no more Netlify calls). Start it again when you need the tile.")
 
 if __name__ == "__main__":
     if "--once" in sys.argv:          # quick check: sign one snapshot and exit
