@@ -1,0 +1,37 @@
+# release-kit: builds, signs and publishes a new kit on a Windows runner (2026-11-09).
+# Started by waov.art (backdoor Installer Control, PROCEED WITH PLAN) right after it commits the prepared script.
+# Needs the repo secret WAOV_SIGNING_KEY (the private key XML). Reports each row back to waov.art, signed with that key.
+name: release-kit
+on:
+  workflow_dispatch:
+    inputs:
+      jobId:
+        description: backdoor job id
+        required: false
+        default: ''
+      notes:
+        description: release notes
+        required: false
+        default: backdoor update
+permissions:
+  contents: write
+concurrency:
+  group: release-kit
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build, sign and release
+        shell: powershell
+        env:
+          WAOV_SIGNING_KEY: ${{ secrets.WAOV_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          JOB_ID: ${{ inputs.jobId }}
+          NOTES: ${{ inputs.notes }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: ./ci-release.ps1
