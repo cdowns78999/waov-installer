@@ -63,6 +63,7 @@ $latest | ConvertTo-Json | Set-Content $latestPath -Encoding ASCII
 
 $live = ''
 if (-not $DryRun) {
+  $ErrorActionPreference = 'Continue'   # git and gh write progress to stderr; judge them by exit code only
   git -C $R add -A
   git -C $R commit -m "kit v${v}: $Notes" | Out-Null
   git -C $R push origin HEAD 2>&1 | Out-Null
@@ -76,5 +77,6 @@ if (-not $DryRun) {
     try { $live = (Invoke-RestMethod "https://github.com/$Repo/releases/latest/download/latest.json" -TimeoutSec 15).version } catch { }
   }
 }
+$ErrorActionPreference = 'Stop'
 if (-not $DryRun) { if ($live -eq $v) { Write-Output "STEP:live LIVE v$v" } else { throw "GitHub still shows '$live', not v$v" } }
 [ordered]@{ ok = $true; version = $v; previous = $cur.ToString(); zip = $zip; sha256 = $sha; dryRun = [bool]$DryRun; liveVersion = $live } | ConvertTo-Json -Compress
