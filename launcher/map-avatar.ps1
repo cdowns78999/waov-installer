@@ -20,6 +20,9 @@ $ItemStage = Join-Path $AppRoot 'items'
 $BoneRoles = @('Hips','Spine','Chest','UpperChest','Neck','Head','LeftShoulder','RightShoulder','LeftUpperArm','RightUpperArm',
                'LeftLowerArm','RightLowerArm','LeftHand','RightHand','LeftUpperLeg','RightUpperLeg','LeftLowerLeg','RightLowerLeg',
                'LeftFoot','RightFoot','LeftToes','RightToes','Jaw','LeftEye','RightEye')
+# The 15 bones Unity requires for any valid Humanoid avatar.
+$RequiredBones = @('Hips','Spine','Head','LeftUpperArm','RightUpperArm','LeftLowerArm','RightLowerArm','LeftHand','RightHand',
+                   'LeftUpperLeg','RightUpperLeg','LeftLowerLeg','RightLowerLeg','LeftFoot','RightFoot')
 
 # ---------- avatars the person mapped (Map to your own Avi) ----------
 function Get-SavedAvatars {
@@ -134,9 +137,19 @@ function Test-MapReady([string]$Project, $Item) {
     $hname = $hum.Name -replace '\.meta$', ''
     [void]$rows.Add((New-Row 'Humanoid avatar model' 'ok' $hname 'WAOV-I42'))
     if ($j -and $BoneRoles -contains [string]$j.bone) {
-      if (Select-String -Path $hum.FullName -Pattern ("humanName:\s*" + $j.bone + "\s*$") -Quiet) {
-        [void]$rows.Add((New-Row "Bone $($j.bone)" 'ok' 'found in the Humanoid map' 'WAOV-I42'))
-      } else { [void]$rows.Add((New-Row "Bone $($j.bone)" 'bad' 'this avatar has no such bone mapped' 'WAOV-E63')) }
+      # A hand-mapped rig lists every bone (humanName lines) in the .meta. A rig Unity auto-maps at import writes an
+      # empty list (found on Club Luna, 2026-11-11): then the 15 bones every valid Humanoid must have are safe, and an
+      # optional bone is a yellow "check it in Unity".
+      $listed = Select-String -Path $hum.FullName -Pattern '^\s*humanName:' -Quiet
+      if ($listed) {
+        if (Select-String -Path $hum.FullName -Pattern ("humanName:\s*" + $j.bone + "\s*$") -Quiet) {
+          [void]$rows.Add((New-Row "Bone $($j.bone)" 'ok' 'found in the Humanoid map' 'WAOV-I42'))
+        } else { [void]$rows.Add((New-Row "Bone $($j.bone)" 'bad' 'this avatar has no such bone mapped' 'WAOV-E63')) }
+      } elseif ($RequiredBones -contains [string]$j.bone) {
+        [void]$rows.Add((New-Row "Bone $($j.bone)" 'ok' 'a required Humanoid bone (Unity auto mapped this rig)' 'WAOV-I42'))
+      } else {
+        [void]$rows.Add((New-Row "Bone $($j.bone)" 'warn' 'optional bone and the rig is auto mapped: check it in Unity' 'WAOV-W43'))
+      }
     }
   }
   if (Get-UnityExe) { [void]$rows.Add((New-Row "Unity $UnityVersion" 'ok' 'installed' 'WAOV-I12')) }
