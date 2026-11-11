@@ -11,6 +11,8 @@
     -Simulate "Blender,UnityHub"   treat those tools as missing      -DocsRoot / -AppRoot   redirect folders
     -NoSystem     skip shortcuts and the Apps list entry               -SnapDir   save window PNGs, then close
     -LatestUrl    use another latest.json (file:// for tests)          -NoUpdateCheck   skip the GitHub check
+    -VccSettings  use another VCC settings.json (slider 3 tests)        -NoLaunch  slider 3 never starts Unity
+  Slider 3 MAP ITEM TO AVATAR lives in launcher\map-avatar.ps1 (dot-sourced below), install.txt section 5b.
   Update rule (every open, install or -Menu): read latest.json from the waov-installer GitHub release. Newer and signed
   with Chad's key -> download, verify, and hand over to that newer kit. Offline -> run this kit (WAOV-W30).
 #>
@@ -24,7 +26,9 @@ param(
   [string]$SnapDir = "",
   [string]$LatestUrl = "https://github.com/cdowns78999/waov-installer/releases/latest/download/latest.json",
   [switch]$NoUpdateCheck,
-  [string]$ZipRootOverride = ""
+  [string]$ZipRootOverride = "",
+  [string]$VccSettings = "",
+  [switch]$NoLaunch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +79,11 @@ $Tools = @(
 )
 $UnityVersion = '2022.3.22f1'
 $UnityChangeset = '887be4894c44'   # Unity 2022.3.22f1 changeset, used by the Hub headless install
+
+# slider 3 helpers (map an item to an avatar); a kit without the file simply has no slider 3
+$script:HasMap = $false
+$mapSrc = Join-Path $Launcher 'map-avatar.ps1'
+if (Test-Path $mapSrc) { try { . $mapSrc; $script:HasMap = $true } catch { Write-Log 'WAOV-E66' "map-avatar.ps1 failed to load: $($_.Exception.Message)" } }
 
 function Get-UninstallNames {
   $keys = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -334,7 +343,8 @@ function Show-Menu {
         </StackPanel>
         <StackPanel Orientation="Horizontal" Margin="0,12,0,14">
           <TextBlock x:Name="Dot1" Text="(o) 1 RUN THE CHECK" FontSize="15" FontWeight="Bold" Foreground="#FFFFFF" Margin="0,0,30,0"/>
-          <TextBlock x:Name="Dot2" Text="( ) 2 SYNC YOUR WAOV ASSETS" FontSize="15" FontWeight="Bold" Foreground="#AAAAAA"/>
+          <TextBlock x:Name="Dot2" Text="( ) 2 SYNC YOUR WAOV ASSETS" FontSize="15" FontWeight="Bold" Foreground="#AAAAAA" Margin="0,0,30,0"/>
+          <TextBlock x:Name="Dot3" Text="( ) 3 MAP ITEM TO AVATAR" FontSize="15" FontWeight="Bold" Foreground="#AAAAAA"/>
         </StackPanel>
         <Rectangle Height="3" Fill="#55FFFF"/>
       </StackPanel>
@@ -354,6 +364,22 @@ function Show-Menu {
           <TextBlock DockPanel.Dock="Top" x:Name="SyncWhere" FontSize="12" Foreground="#AAAAAA" Margin="0,8,0,4"/>
           <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="SyncList"/></ScrollViewer>
         </DockPanel>
+        <Grid x:Name="Slide3" Visibility="Collapsed" Margin="4,8,4,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="300"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <DockPanel Grid.Column="0">
+            <TextBlock DockPanel.Dock="Top" Text="YOUR AVATAR" FontSize="15" FontWeight="Bold" Foreground="#FFFF55" Margin="0,0,0,4"/>
+            <Button DockPanel.Dock="Top" x:Name="MapOwn" Content="MAP TO YOUR OWN AVI" Style="{DynamicResource Px}" Margin="0,0,0,6" FontSize="13"/>
+            <ListBox DockPanel.Dock="Top" x:Name="AviList" Height="96" Background="#000000" Foreground="#FFFFFF" BorderBrush="#55FFFF" FontSize="13"/>
+            <TextBlock DockPanel.Dock="Top" Text="ITEM" FontSize="15" FontWeight="Bold" Foreground="#FFFF55" Margin="0,10,0,4"/>
+            <ListBox x:Name="ItemList" Background="#000000" Foreground="#FFFFFF" BorderBrush="#55FFFF" FontSize="13"/>
+          </DockPanel>
+          <DockPanel Grid.Column="2">
+            <TextBlock DockPanel.Dock="Top" Text="MAP CHECK" FontSize="15" FontWeight="Bold" Foreground="#FFFF55" Margin="0,0,0,4"/>
+            <StackPanel DockPanel.Dock="Top" x:Name="MapRows"/>
+            <Button DockPanel.Dock="Top" x:Name="Approve" Content="APPROVE AND OPEN UNITY" Style="{DynamicResource Px}" Margin="0,8,0,6" IsEnabled="False" HorizontalAlignment="Left"/>
+            <ScrollViewer VerticalScrollBarVisibility="Auto"><TextBlock x:Name="MapSteps" FontSize="12" Foreground="#FFFFFF" TextWrapping="Wrap"/></ScrollViewer>
+          </DockPanel>
+        </Grid>
       </Grid>
     </DockPanel>
   </Grid>
@@ -362,7 +388,8 @@ function Show-Menu {
   $w = New-Xaml $x
   $w.Resources.MergedDictionaries.Add((New-Xaml $Styles))
   try { $w.Icon = Img 'waov.ico' } catch { }
-  $g = @{}; foreach ($n in 'Root','Cursor','Dot1','Dot2','Mute','Next','Back','Recheck','Slide1','Slide2','Sync','Flash','SyncWhere','SyncList','Stamp','StampNote') { $g[$n] = $w.FindName($n) }
+  $g = @{}; foreach ($n in 'Root','Cursor','Dot1','Dot2','Dot3','Mute','Next','Back','Recheck','Slide1','Slide2','Slide3','Sync','Flash','SyncWhere','SyncList','Stamp','StampNote','MapOwn','AviList','ItemList','MapRows','Approve','MapSteps') { $g[$n] = $w.FindName($n) }
+  if (-not $script:HasMap) { $g.Dot3.Visibility = 'Collapsed' }
   $g.Stamp.Text = "v$KitVersion"
   if ($script:UpdateNote -and $script:UpdateNote -ne 'offline') { $g.Stamp.Foreground = '#FFFF55'; $g.StampNote.Text = 'UPDATE AVAILABLE: ' + $script:UpdateNote }
   elseif ($script:UpdateNote -eq 'offline') { $g.StampNote.Text = 'offline, not checked' }
@@ -460,13 +487,79 @@ function Show-Menu {
     if ($SnapDir) { $g.Flash.Opacity = 1 } else { $g.Flash.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $a) }
   }
 
+  # ---------- slider 3: MAP ITEM TO AVATAR (helpers in map-avatar.ps1) ----------
+  $script:MapRows = @()
+  $fillLists = {
+    $g.AviList.Items.Clear(); $script:AviChoices = @(Get-AvatarChoices)
+    foreach ($a in $script:AviChoices) { [void]$g.AviList.Items.Add(('{0}   ({1})' -f $a.name, $a.from)) }
+    if (-not $script:AviChoices.Count) { [void]$g.AviList.Items.Add('no avatar yet: click MAP TO YOUR OWN AVI') }
+    $g.ItemList.Items.Clear(); $script:ItemChoices = @(Get-WaovItems)
+    foreach ($i in $script:ItemChoices) {
+      if ($i.manifest) { [void]$g.ItemList.Items.Add(('{0}   {1}' -f $i.manifest.title, $i.manifest.bone)) }
+      else { [void]$g.ItemList.Items.Add(('{0}   no item.json' -f $i.file)) }
+    }
+    if (-not $script:ItemChoices.Count) { [void]$g.ItemList.Items.Add('no WAOV items yet (Documents\WAOV assets\WAOV items)') }
+  }
+  $render3 = {
+    $g.MapRows.Children.Clear(); $g.Approve.IsEnabled = $false
+    $ai = $g.AviList.SelectedIndex; $ii = $g.ItemList.SelectedIndex
+    if ($ai -lt 0 -or $ai -ge $script:AviChoices.Count -or $ii -lt 0 -or $ii -ge $script:ItemChoices.Count) {
+      $t = New-Object System.Windows.Controls.TextBlock; $t.Text = 'Pick your avatar and an item.'; $t.FontSize = 14; $t.Foreground = '#AAAAAA'
+      [void]$g.MapRows.Children.Add($t); return
+    }
+    $script:MapPick = @{ Avi = $script:AviChoices[$ai]; Item = $script:ItemChoices[$ii] }
+    $script:MapRows = @(Test-MapReady $script:MapPick.Avi.path $script:MapPick.Item)
+    foreach ($r in $script:MapRows) {
+      $row = New-Object System.Windows.Controls.TextBlock; $row.FontSize = 13; $row.Margin = '0,0,0,3'; $row.TextWrapping = 'Wrap'
+      switch ($r.state) { 'ok' { $m = '[v]'; $c = '#55FF55' } 'warn' { $m = '[!]'; $c = '#FFFF55' } default { $m = '[X]'; $c = '#FF5555' } }
+      $row.Text = ('{0} {1}: {2}' -f $m, $r.label, $r.note); $row.Foreground = $c
+      if ($r.state -ne 'ok') { $row.Text += "  ($($r.code))" }
+      [void]$g.MapRows.Children.Add($row)
+    }
+    $g.Approve.IsEnabled = -not ($script:MapRows | Where-Object { $_.state -eq 'bad' })
+    $g.MapSteps.Text = ''
+  }
+  if ($script:HasMap) {
+    $g.AviList.Add_SelectionChanged({ & $render3 })
+    $g.ItemList.Add_SelectionChanged({ & $render3 })
+    $g.MapOwn.Add_Click({
+      Play-Beep
+      $d = New-Object System.Windows.Forms.FolderBrowserDialog
+      $d.Description = 'Pick your avatar''s Unity project folder (the one with Assets and Packages inside)'
+      if ($d.ShowDialog() -eq 'OK') { Save-Avatar $d.SelectedPath; & $fillLists; $g.AviList.SelectedIndex = 0 }
+    })
+    $g.Approve.Add_Click({
+      Play-Beep
+      $g.Approve.IsEnabled = $false
+      try {
+        $vcc = Open-MapInUnity $script:MapPick.Avi.path $script:MapPick.Item
+        $g.MapSteps.Text = "VCC: $vcc. Unity is opening.`nDo these in Unity:`n`n" + ((Get-MapSteps $script:MapPick.Item) -join "`n")
+        $g.MapSteps.Foreground = '#FFFFFF'
+      } catch {
+        $g.MapSteps.Text = 'problem: ' + $_.Exception.Message; $g.MapSteps.Foreground = '#FF5555'; $g.Approve.IsEnabled = $true
+      }
+    })
+  }
+
+  $script:Slide = 1
   $go = {
     param([int]$n)
-    if ($n -eq 1) { $g.Slide1.Visibility = 'Visible'; $g.Slide2.Visibility = 'Collapsed'; $g.Dot1.Text = '(o) 1 RUN THE CHECK'; $g.Dot1.Foreground = '#FFFFFF'; $g.Dot2.Text = '( ) 2 SYNC YOUR WAOV ASSETS'; $g.Dot2.Foreground = '#AAAAAA'; $g.Next.Visibility = 'Visible'; $g.Recheck.Visibility = 'Visible'; $g.Back.Visibility = 'Collapsed' }
-    else { $g.Slide1.Visibility = 'Collapsed'; $g.Slide2.Visibility = 'Visible'; $g.Dot1.Text = '( ) 1 RUN THE CHECK'; $g.Dot1.Foreground = '#AAAAAA'; $g.Dot2.Text = '(o) 2 SYNC YOUR WAOV ASSETS'; $g.Dot2.Foreground = '#FFFFFF'; $g.Next.Visibility = 'Collapsed'; $g.Recheck.Visibility = 'Collapsed'; $g.Back.Visibility = 'Visible' }
+    $max = 2; if ($script:HasMap) { $max = 3 }
+    if ($n -lt 1) { $n = 1 }; if ($n -gt $max) { $n = $max }
+    $script:Slide = $n
+    $names = @('1 RUN THE CHECK', '2 SYNC YOUR WAOV ASSETS', '3 MAP ITEM TO AVATAR')
+    $slides = @($g.Slide1, $g.Slide2, $g.Slide3); $dots = @($g.Dot1, $g.Dot2, $g.Dot3)
+    for ($i = 0; $i -lt 3; $i++) {
+      if ($i + 1 -eq $n) { $slides[$i].Visibility = 'Visible'; $dots[$i].Text = '(o) ' + $names[$i]; $dots[$i].Foreground = '#FFFFFF' }
+      else { $slides[$i].Visibility = 'Collapsed'; $dots[$i].Text = '( ) ' + $names[$i]; $dots[$i].Foreground = '#AAAAAA' }
+    }
+    if ($n -lt $max) { $g.Next.Visibility = 'Visible' } else { $g.Next.Visibility = 'Collapsed' }
+    if ($n -gt 1) { $g.Back.Visibility = 'Visible' } else { $g.Back.Visibility = 'Collapsed' }
+    if ($n -eq 1) { $g.Recheck.Visibility = 'Visible' } else { $g.Recheck.Visibility = 'Collapsed' }
+    if ($n -eq 3) { & $fillLists; & $render3 }
   }
-  $g.Next.Add_Click({ Play-Beep; & $go 2 })
-  $g.Back.Add_Click({ Play-Beep; & $go 1 })
+  $g.Next.Add_Click({ Play-Beep; & $go ($script:Slide + 1) })
+  $g.Back.Add_Click({ Play-Beep; & $go ($script:Slide - 1) })
   $g.Recheck.Add_Click({ Play-Beep; [void](Step-Check); & $render1 })
   $g.Sync.Add_Click({ Play-Beep; & $syncNow })
   $g.Mute.Add_Click({
@@ -486,7 +579,12 @@ function Show-Menu {
     $snap.Add_Tick({
       $script:snapStep++
       if ($script:snapStep -eq 1) { Save-Snap $w 'menu-slider1.png'; & $go 2; & $syncNow }
-      elseif ($script:snapStep -eq 2) { Save-Snap $w 'menu-slider2.png'; $snap.Stop(); $w.Close() }
+      elseif ($script:snapStep -eq 2) {
+        Save-Snap $w 'menu-slider2.png'
+        if ($script:HasMap) { & $go 3; if ($script:AviChoices.Count) { $g.AviList.SelectedIndex = 0 }; if ($script:ItemChoices.Count) { $g.ItemList.SelectedIndex = 0 } }
+        else { $snap.Stop(); $w.Close() }
+      }
+      elseif ($script:snapStep -eq 3) { Save-Snap $w 'menu-slider3.png'; $snap.Stop(); $w.Close() }
     })
     $snap.Start()
   }
