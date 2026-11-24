@@ -1,0 +1,23 @@
+{
+  "_about": "Slider 3 body part dropdown (Chad 2026-11-14). Plain words -> Unity HumanBodyBones role. offset is metres in the bone's local space, applied by WAOVMapCheck to the Bone Proxy child. required=false means the avatar may not map that bone (yellow check).",
+  "parts": [
+    { "label": "Head / hat / hair",        "role": "Head",          "offset": [0, 0.10, 0],  "required": true  },
+    { "label": "Face / glasses / mask",    "role": "Head",          "offset": [0, 0.05, 0.09], "required": true },
+    { "label": "Neck / collar / choker",   "role": "Neck",          "offset": [0, 0, 0],     "required": false },
+    { "label": "Chest / necklace / badge", "role": "Chest",         "offset": [0, 0, 0.08],  "required": false },
+    { "label": "Back / wings / backpack",  "role": "UpperChest",    "fallback": "Chest", "offset": [0, 0, -0.10], "required": false },
+    { "label": "Waist / belt / tail",      "role": "Hips",          "offset": [0, 0, 0],     "required": true  },
+    { "label": "Upper arm, left",          "role": "LeftUpperArm",  "offset": [0, 0, 0],     "required": true  },
+    { "label": "Upper arm, right",         "role": "RightUpperArm", "offset": [0, 0, 0],     "required": true  },
+    { "label": "Forearm / bracelet, left", "role": "LeftLowerArm",  "offset": [0, 0, 0],     "required": true  },
+    { "label": "Forearm / bracelet, right","role": "RightLowerArm", "offset": [0, 0, 0],     "required": true  },
+    { "label": "Hand / held item, left",   "role": "LeftHand",      "offset": [0, 0, 0],     "required": true  },
+    { "label": "Hand / held item, right",  "role": "RightHand",     "offset": [0, 0, 0],     "required": true  },
+    { "label": "Thigh, left",              "role": "LeftUpperLeg",  "offset": [0, 0, 0],     "required": true  },
+    { "label": "Thigh, right",             "role": "RightUpperLeg", "offset": [0, 0, 0],     "required": true  },
+    { "label": "Shin / leg band, left",    "role": "LeftLowerLeg",  "offset": [0, 0, 0],     "required": true  },
+    { "label": "Shin / leg band, right",   "role": "RightLowerLeg", "offset": [0, 0, 0],     "required": true  },
+    { "label": "Foot / shoe, left",        "role": "LeftFoot",      "offset": [0, 0, 0],     "required": true  },
+    { "label": "Foot / shoe, right",       "role": "RightFoot",     "offset": [0, 0, 0],     "required": true  }
+  ]
+}

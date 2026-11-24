@@ -1,4 +1,4 @@
-<#
+﻿<#
   Miles Installer and Updater  -  We Are One Voice launcher kit
   Plain readable source. Compiled to "Miles Installer and Updater.exe" by ..\build-kit.ps1 (ps2exe).
   Contract: waov-comm skill, i-install\install.txt. Codes: i-install\codes.txt.
@@ -84,6 +84,10 @@ $UnityChangeset = '887be4894c44'   # Unity 2022.3.22f1 changeset, used by the Hu
 $script:HasMap = $false
 $mapSrc = Join-Path $Launcher 'map-avatar.ps1'
 if (Test-Path $mapSrc) { try { . $mapSrc; $script:HasMap = $true } catch { Write-Log 'WAOV-E66' "map-avatar.ps1 failed to load: $($_.Exception.Message)" } }
+foreach ($extra in 'map-verify.ps1', 'map-unity-check.ps1') {   # 2026-11-14: three picks + fast and Unity checks
+  $xs = Join-Path $Launcher $extra
+  if ($script:HasMap -and (Test-Path $xs)) { try { . $xs } catch { Write-Log 'WAOV-E66' "$extra failed to load: $($_.Exception.Message)"; $script:HasMap = $false } }
+}
 
 function Get-UninstallNames {
   $keys = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -359,8 +363,14 @@ function Show-Menu {
         <DockPanel x:Name="Slide2" Visibility="Collapsed" Margin="4,12,4,0">
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
             <Button x:Name="Sync" Content="SYNC ASSETS" Style="{DynamicResource Px}" Margin="0"/>
+            <Button x:Name="Download" Content="DOWNLOAD AVATARS" Style="{DynamicResource Px}"/>
+            <Button x:Name="Pair" Content="PAIR" Style="{DynamicResource Px}" Margin="0"/>
+            <Button x:Name="Get" Content="GET" Style="{DynamicResource Px}" Visibility="Collapsed"/>
+            <Button x:Name="Unpack" Content="UNPACK" Style="{DynamicResource Px}" Visibility="Collapsed" Margin="0"/>
             <TextBlock x:Name="Flash" Text="  [v] SYNCED" FontSize="20" FontWeight="Bold" Foreground="#55FF55" Opacity="0" VerticalAlignment="Center"/>
           </StackPanel>
+          <TextBlock DockPanel.Dock="Top" x:Name="PairCode" FontSize="14" FontWeight="Bold" Foreground="#FFFF55" Margin="0,8,0,0" TextWrapping="Wrap"/>
+          <StackPanel DockPanel.Dock="Top" x:Name="Catalog" Margin="0,8,0,0" Visibility="Collapsed"/>
           <TextBlock DockPanel.Dock="Top" x:Name="SyncWhere" FontSize="12" Foreground="#AAAAAA" Margin="0,8,0,4"/>
           <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="SyncList"/></ScrollViewer>
         </DockPanel>
@@ -370,12 +380,15 @@ function Show-Menu {
             <TextBlock DockPanel.Dock="Top" Text="YOUR AVATAR" FontSize="15" FontWeight="Bold" Foreground="#FFFF55" Margin="0,0,0,4"/>
             <Button DockPanel.Dock="Top" x:Name="MapOwn" Content="MAP TO YOUR OWN AVI" Style="{DynamicResource Px}" Margin="0,0,0,6" FontSize="13"/>
             <ListBox DockPanel.Dock="Top" x:Name="AviList" Height="96" Background="#000000" Foreground="#FFFFFF" BorderBrush="#55FFFF" FontSize="13"/>
+            <TextBlock DockPanel.Dock="Top" Text="BODY PART" FontSize="15" FontWeight="Bold" Foreground="#FFFF55" Margin="0,10,0,4"/>
+            <ComboBox DockPanel.Dock="Top" x:Name="PartPick" FontSize="13"/>
             <TextBlock DockPanel.Dock="Top" Text="ITEM" FontSize="15" FontWeight="Bold" Foreground="#FFFF55" Margin="0,10,0,4"/>
             <ListBox x:Name="ItemList" Background="#000000" Foreground="#FFFFFF" BorderBrush="#55FFFF" FontSize="13"/>
           </DockPanel>
           <DockPanel Grid.Column="2">
             <TextBlock DockPanel.Dock="Top" Text="MAP CHECK" FontSize="15" FontWeight="Bold" Foreground="#FFFF55" Margin="0,0,0,4"/>
             <StackPanel DockPanel.Dock="Top" x:Name="MapRows"/>
+            <Button DockPanel.Dock="Top" x:Name="UCheck" Content="RUN UNITY CHECK" Style="{DynamicResource Px}" Margin="0,8,0,0" IsEnabled="False" HorizontalAlignment="Left"/>
             <Button DockPanel.Dock="Top" x:Name="Approve" Content="APPROVE AND OPEN UNITY" Style="{DynamicResource Px}" Margin="0,8,0,6" IsEnabled="False" HorizontalAlignment="Left"/>
             <ScrollViewer VerticalScrollBarVisibility="Auto"><TextBlock x:Name="MapSteps" FontSize="12" Foreground="#FFFFFF" TextWrapping="Wrap"/></ScrollViewer>
           </DockPanel>
@@ -388,7 +401,7 @@ function Show-Menu {
   $w = New-Xaml $x
   $w.Resources.MergedDictionaries.Add((New-Xaml $Styles))
   try { $w.Icon = Img 'waov.ico' } catch { }
-  $g = @{}; foreach ($n in 'Root','Cursor','Dot1','Dot2','Dot3','Mute','Next','Back','Recheck','Slide1','Slide2','Slide3','Sync','Flash','SyncWhere','SyncList','Stamp','StampNote','MapOwn','AviList','ItemList','MapRows','Approve','MapSteps') { $g[$n] = $w.FindName($n) }
+  $g = @{}; foreach ($n in 'Root','Cursor','Dot1','Dot2','Dot3','Mute','Next','Back','Recheck','Slide1','Slide2','Slide3','Sync','Download','Pair','PairCode','Get','Unpack','Catalog','Flash','SyncWhere','SyncList','Stamp','StampNote','MapOwn','AviList','ItemList','MapRows','Approve','MapSteps','PartPick','UCheck') { $g[$n] = $w.FindName($n) }
   if (-not $script:HasMap) { $g.Dot3.Visibility = 'Collapsed' }
   $g.Stamp.Text = "v$KitVersion"
   if ($script:UpdateNote -and $script:UpdateNote -ne 'offline') { $g.Stamp.Foreground = '#FFFF55'; $g.StampNote.Text = 'UPDATE AVAILABLE: ' + $script:UpdateNote }
@@ -493,22 +506,25 @@ function Show-Menu {
     $g.AviList.Items.Clear(); $script:AviChoices = @(Get-AvatarChoices)
     foreach ($a in $script:AviChoices) { [void]$g.AviList.Items.Add(('{0}   ({1})' -f $a.name, $a.from)) }
     if (-not $script:AviChoices.Count) { [void]$g.AviList.Items.Add('no avatar yet: click MAP TO YOUR OWN AVI') }
-    $g.ItemList.Items.Clear(); $script:ItemChoices = @(Get-WaovItems)
-    foreach ($i in $script:ItemChoices) {
-      if ($i.manifest) { [void]$g.ItemList.Items.Add(('{0}   {1}' -f $i.manifest.title, $i.manifest.bone)) }
-      else { [void]$g.ItemList.Items.Add(('{0}   no item.json' -f $i.file)) }
-    }
-    if (-not $script:ItemChoices.Count) { [void]$g.ItemList.Items.Add('no WAOV items yet (Documents\WAOV assets\WAOV items)') }
+    $g.PartPick.Items.Clear(); $script:Parts = @(Get-BodyParts); foreach ($p in $script:Parts) { [void]$g.PartPick.Items.Add($p.label) }
+    $g.ItemList.Items.Clear(); $script:ItemChoices = @(Get-UnpackedItems)
+    foreach ($i in $script:ItemChoices) { [void]$g.ItemList.Items.Add(('{0}   {1}' -f $i.name, $(if ($i.item) { $i.item.bone } else { 'no item.json' }))) }
+    if (-not $script:ItemChoices.Count) { [void]$g.ItemList.Items.Add('no unpacked items yet: GET and UNPACK on slider 2') }
   }
   $render3 = {
     $g.MapRows.Children.Clear(); $g.Approve.IsEnabled = $false
-    $ai = $g.AviList.SelectedIndex; $ii = $g.ItemList.SelectedIndex
-    if ($ai -lt 0 -or $ai -ge $script:AviChoices.Count -or $ii -lt 0 -or $ii -ge $script:ItemChoices.Count) {
-      $t = New-Object System.Windows.Controls.TextBlock; $t.Text = 'Pick your avatar and an item.'; $t.FontSize = 14; $t.Foreground = '#AAAAAA'
+    $g.UCheck.IsEnabled = $false
+    $ai = $g.AviList.SelectedIndex; $ii = $g.ItemList.SelectedIndex; $pi = $g.PartPick.SelectedIndex
+    if ($ai -ge 0 -and $ai -lt $script:AviChoices.Count -and $ii -ge 0 -and $ii -lt $script:ItemChoices.Count -and $pi -lt 0) {
+      $want = [string]$script:ItemChoices[$ii].item.bone   # preselect the body part the item was made for
+      for ($k = 0; $k -lt $script:Parts.Count; $k++) { if ($script:Parts[$k].role -eq $want) { $g.PartPick.SelectedIndex = $k; return } }
+    }
+    if ($ai -lt 0 -or $ai -ge $script:AviChoices.Count -or $ii -lt 0 -or $ii -ge $script:ItemChoices.Count -or $pi -lt 0) {
+      $t = New-Object System.Windows.Controls.TextBlock; $t.Text = 'Pick your avatar, a body part and an item.'; $t.FontSize = 14; $t.Foreground = '#AAAAAA'
       [void]$g.MapRows.Children.Add($t); return
     }
-    $script:MapPick = @{ Avi = $script:AviChoices[$ai]; Item = $script:ItemChoices[$ii] }
-    $script:MapRows = @(Test-MapReady $script:MapPick.Avi.path $script:MapPick.Item)
+    $script:MapPick = @{ Avi = $script:AviChoices[$ai]; Item = $script:ItemChoices[$ii]; Part = $script:Parts[$pi] }
+    $script:MapRows = @(Test-MapPicks $script:MapPick.Avi.path $script:MapPick.Part $script:MapPick.Item)
     foreach ($r in $script:MapRows) {
       $row = New-Object System.Windows.Controls.TextBlock; $row.FontSize = 13; $row.Margin = '0,0,0,3'; $row.TextWrapping = 'Wrap'
       switch ($r.state) { 'ok' { $m = '[v]'; $c = '#55FF55' } 'warn' { $m = '[!]'; $c = '#FFFF55' } default { $m = '[X]'; $c = '#FF5555' } }
@@ -516,12 +532,39 @@ function Show-Menu {
       if ($r.state -ne 'ok') { $row.Text += "  ($($r.code))" }
       [void]$g.MapRows.Children.Add($row)
     }
-    $g.Approve.IsEnabled = -not ($script:MapRows | Where-Object { $_.state -eq 'bad' })
-    $g.MapSteps.Text = ''
+    $g.UCheck.IsEnabled = -not ($script:MapRows | Where-Object { $_.state -eq 'bad' })   # APPROVE waits for the Unity check
+    $g.MapSteps.Text = 'Fast check done. Click RUN UNITY CHECK to prove the mapping (about a minute).'
   }
   if ($script:HasMap) {
     $g.AviList.Add_SelectionChanged({ & $render3 })
     $g.ItemList.Add_SelectionChanged({ & $render3 })
+    $g.PartPick.Add_SelectionChanged({ & $render3 })
+    $g.UCheck.Add_Click({
+      Play-Beep; $g.UCheck.IsEnabled = $false; $g.MapSteps.Foreground = '#FFFF55'
+      $script:UJob = Start-UnityMapCheck $script:MapPick.Avi.path $script:MapPick.Part $script:MapPick.Item
+      $script:UDots = 0
+      $script:UTimer = New-Object System.Windows.Threading.DispatcherTimer; $script:UTimer.Interval = [TimeSpan]::FromSeconds(1)
+      $script:UTimer.Add_Tick({
+        $st = Read-UnityMapCheck $script:UJob
+        if (-not $st.done) {
+          $script:UDots = ($script:UDots + 1) % 4
+          $word = @{ copy = 'copying your project to a safe temp folder'; unity = 'Unity is checking in the background' }[[string]$st.stage]
+          $g.MapSteps.Text = "$word$('.' * ($script:UDots + 1))   ($($st.minutes) min)`nYou can keep using the menu."; return
+        }
+        $script:UTimer.Stop(); & $script:UFinish $st.result
+      })
+      $script:UTimer.Start()
+    })
+    $script:UFinish = {
+      param($res)
+      foreach ($r in $res.rows) {
+        $row = New-Object System.Windows.Controls.TextBlock; $row.FontSize = 13; $row.Margin = '0,0,0,3'; $row.TextWrapping = 'Wrap'
+        switch ($r.state) { 'ok' { $m = '[v]'; $c = '#55FF55' } 'warn' { $m = '[!]'; $c = '#FFFF55' } default { $m = '[X]'; $c = '#FF5555' } }
+        $row.Text = ('{0} UNITY {1}: {2}' -f $m, $r.label, $r.note); $row.Foreground = $c; [void]$g.MapRows.Children.Add($row)
+      }
+      if ($res.pass) { $g.Approve.IsEnabled = $true; $g.MapSteps.Text = '[v] Mapping proven in Unity. APPROVE opens your real project.'; $g.MapSteps.Foreground = '#55FF55' }
+      else { $g.UCheck.IsEnabled = $true; $g.MapSteps.Text = 'The Unity check found a problem (red rows). Fix it and run again.'; $g.MapSteps.Foreground = '#FF5555' }
+    }
     $g.MapOwn.Add_Click({
       Play-Beep
       $d = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -532,8 +575,8 @@ function Show-Menu {
       Play-Beep
       $g.Approve.IsEnabled = $false
       try {
-        $vcc = Open-MapInUnity $script:MapPick.Avi.path $script:MapPick.Item
-        $g.MapSteps.Text = "VCC: $vcc. Unity is opening.`nDo these in Unity:`n`n" + ((Get-MapSteps $script:MapPick.Item) -join "`n")
+        $vcc = Open-UnpackedInUnity $script:MapPick.Avi.path $script:MapPick.Item
+        $g.MapSteps.Text = "VCC: $vcc. Unity is opening.`nDo these in Unity:`n`n" + ((Get-UnpackedSteps $script:MapPick.Item $script:MapPick.Part) -join "`n")
         $g.MapSteps.Foreground = '#FFFFFF'
       } catch {
         $g.MapSteps.Text = 'problem: ' + $_.Exception.Message; $g.MapSteps.Foreground = '#FF5555'; $g.Approve.IsEnabled = $true
@@ -561,7 +604,170 @@ function Show-Menu {
   $g.Next.Add_Click({ Play-Beep; & $go ($script:Slide + 1) })
   $g.Back.Add_Click({ Play-Beep; & $go ($script:Slide - 1) })
   $g.Recheck.Add_Click({ Play-Beep; [void](Step-Check); & $render1 })
-  $g.Sync.Add_Click({ Play-Beep; & $syncNow })
+  # SYNC also CATCHES (2026-11-14): after a Google Drive download the script has a break (the browser saves the zip).
+  # SYNC looks in Downloads for zips named like our assets (AVI-/ITE-/WOR- codes, or a store name from the list)
+  # and COPIES each into the right WAOV folder. The Downloads file is left alone; a zip already there is skipped.
+  $script:CatalogNames = @{}
+  $script:Naming = @(@{ prefix = 'AVI'; type = 'avi'; folder = 'WAOV avatars' }, @{ prefix = 'ITE'; type = 'item'; folder = 'WAOV items' }, @{ prefix = 'WOR'; type = 'world'; folder = 'WAOV worlds' })
+  $catchDownloads = {
+    $dl = Join-Path $env:USERPROFILE 'Downloads'; if (-not (Test-Path $dl)) { return 0 }
+    $dirOf = @{ AVI = 'WAOV avatars'; ITE = 'WAOV items'; WOR = 'WAOV worlds'; ITEM = 'WAOV items'; WORLD = 'WAOV worlds' }   # keys are case-insensitive: avi = AVI
+    $names = @{}; foreach ($k in @($script:CatalogNames.Keys)) { $names[$k] = $script:CatalogNames[$k] }
+    $n = 0
+    foreach ($z in Get-ChildItem $dl -Filter '*.zip' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-14) }) {
+      $base = ($z.BaseName -replace '\s*\(\d+\)$', '')        # Drive adds " (1)" on a second download
+      $type = $null
+      foreach ($nr in $script:Naming) { if ($base -match ('^' + [regex]::Escape([string]$nr.prefix) + '-')) { $type = [string]$nr.prefix; break } }
+      if (-not $type -and $base -match '^(AVI|ITE|WOR)-\d{5}-\d{8}-\d{4}') { $type = $Matches[1] }
+      elseif ($names.ContainsKey($base.ToLower())) { $type = $names[$base.ToLower()] }
+      if (-not $type) { continue }
+      $folder = $dirOf[$type]; foreach ($nr in $script:Naming) { if ($nr.prefix -eq $type -or $nr.type -eq $type) { $folder = [string]$nr.folder } }
+      if (-not $folder) { continue }
+      $dirOf[$type] = $folder
+      $destDir = Join-Path $AssetsRoot $folder; New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+      $dest = Join-Path $destDir ($base + '.zip')
+      if ((Test-Path $dest) -and ((Get-Item $dest).Length -eq $z.Length)) { continue }
+      try { Copy-Item $z.FullName $dest -Force; $n++; Write-Log 'WAOV-I58' "caught $($z.Name) from Downloads into $($dirOf[$type])" }
+      catch { Write-Log 'WAOV-E74' "could not copy $($z.Name): $($_.Exception.Message)" }
+    }
+    return $n
+  }
+  $g.Sync.Add_Click({
+    Play-Beep
+    $caught = & $catchDownloads
+    & $syncNow; if ($showCatalog) { & $showCatalog }
+    if ($caught) { $g.SyncWhere.Text = "[v] caught $caught new download(s) from Downloads. " + $g.SyncWhere.Text }
+  })
+  # DOWNLOAD AVATARS + PAIR (2026-11-14). Opens the waov.art store; pairing uses a one-time code, never a password.
+  $PairApi = 'https://waov.art/.netlify/functions/widget-pair'
+  $PairFile = Join-Path $AppRoot 'pair.json'
+  if (Test-Path $PairFile) { try { $pj = Get-Content $PairFile -Raw | ConvertFrom-Json; $g.Pair.Content = 'PAIRED'; $g.PairCode.Text = "paired with $($pj.name)"
+    try { $pg = Invoke-RestMethod -Method Post -Uri $PairApi -ContentType 'application/json' -Body (@{ op = 'widget.ping'; token = $pj.token } | ConvertTo-Json) -TimeoutSec 8
+      if (-not $pg.paired) { Remove-Item $PairFile -Force; $g.Pair.Content = 'PAIR'; $g.PairCode.Text = 'unpaired on waov.art, click PAIR to pair again' } } catch { } } catch { } }
+  # 8-bit attention ripple on PAIR every 2 s until paired: 4 stepped colour frames, 120 ms each
+  $script:RipFrames = @('#FFFF55','#55FFFF','#FFFFFF','#AAAAAA'); $script:RipI = -1
+  $script:RipTimer = New-Object System.Windows.Threading.DispatcherTimer; $script:RipTimer.Interval = [TimeSpan]::FromMilliseconds(120)
+  $script:RipTick = 0
+  $script:RipTimer.Add_Tick({
+    if ($g.Pair.Content -eq 'PAIRED') { $g.Pair.ClearValue([System.Windows.Controls.Control]::BackgroundProperty); $g.Pair.BorderThickness = 0; $script:RipTimer.Stop(); return }
+    $script:RipTick = ($script:RipTick + 1) % 17
+    if ($script:RipTick -lt 4) {
+      $g.Pair.Background = (New-Object System.Windows.Media.BrushConverter).ConvertFromString($script:RipFrames[$script:RipTick])
+    } elseif ($script:RipTick -eq 4) { $g.Pair.ClearValue([System.Windows.Controls.Control]::BackgroundProperty) }
+  })
+  $script:RipTimer.Start()
+  # SEND TO WIDGET ground work (2026-11-14, contract i-install\unpack.txt): GET downloads, UNPACK lays it out for the map step.
+  $script:QItem = $null; $script:QZip = $null
+  $typeDir = @{ avi = 'WAOV avatars'; item = 'WAOV items'; world = 'WAOV worlds' }
+  $checkQueue = {
+    if (-not (Test-Path $PairFile)) { return }
+    try { $tok = (Get-Content $PairFile -Raw | ConvertFrom-Json).token
+      $qr = Invoke-RestMethod -Method Post -Uri $PairApi -ContentType 'application/json' -Body (@{ op = 'widget.queue'; token = $tok } | ConvertTo-Json) -TimeoutSec 10
+    } catch { return }
+    $next = @($qr.items) | Select-Object -First 1
+    if ($next -and (-not $script:QItem -or $script:QItem.sendId -ne $next.sendId)) {
+      $script:QItem = $next; $g.Get.Content = "GET $($next.name)"; $g.Get.Visibility = 'Visible'; $g.Unpack.Visibility = 'Collapsed'
+      $g.PairCode.Text = "$($next.name) is waiting for you. Click GET."; Write-Log 'WAOV-I53' "queue item $($next.name)"
+    }
+  }
+  function Send-Report([string]$state, [string]$note) {
+    try { $tok = (Get-Content $PairFile -Raw | ConvertFrom-Json).token
+      Invoke-RestMethod -Method Post -Uri $PairApi -ContentType 'application/json' -Body (@{ op = 'widget.report'; token = $tok; sendId = $script:QItem.sendId; state = $state; note = $note } | ConvertTo-Json) -TimeoutSec 10 | Out-Null } catch { }
+  }
+  $g.Get.Add_Click({
+    Play-Beep; $it = $script:QItem; if (-not $it) { return }
+    $dir = Join-Path (Join-Path $AssetsRoot $typeDir[[string]$it.type]) $it.name
+    if (Test-Path $dir) { $g.PairCode.Text = "$($it.name) is already here (WAOV-E72)"; Write-Log 'WAOV-E72' "folder exists $dir"; return }
+    $tmp = Join-Path $env:TEMP ("waov-" + $it.sendId + ".zip")
+    $g.PairCode.Text = "downloading $($it.name)..."
+    try { Invoke-WebRequest -Uri $it.url -OutFile $tmp -UseBasicParsing -TimeoutSec 900 } catch { $g.PairCode.Text = 'download failed (WAOV-E73)'; Write-Log 'WAOV-E73' $_.Exception.Message; Send-Report 'failed' 'download'; return }
+    Write-Log 'WAOV-I54' "downloaded $($it.name)"
+    $h = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
+    if ($h -ne [string]$it.sha256) { Remove-Item $tmp -Force; $g.PairCode.Text = 'file check failed (WAOV-E71)'; Write-Log 'WAOV-E71' "hash $h"; Send-Report 'failed' 'hash'; return }
+    Write-Log 'WAOV-I55' 'hash ok'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    Move-Item $tmp (Join-Path $dir ($it.name + '.zip'))
+    $script:QZip = $dir; Send-Report 'downloaded' ''
+    $g.Get.Visibility = 'Collapsed'; $g.Unpack.Visibility = 'Visible'; $g.PairCode.Text = "[v] $($it.name) downloaded. Click UNPACK."
+  })
+  $g.Unpack.Add_Click({
+    Play-Beep; $it = $script:QItem; $dir = $script:QZip; if (-not $it -or -not $dir) { return }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $outer = Join-Path $dir ($it.name + '.zip'); $stage = Join-Path $dir '_outer'; $asset = Join-Path $dir 'asset'
+    try {
+      [System.IO.Compression.ZipFile]::ExtractToDirectory($outer, $stage)
+      $inner = Get-ChildItem $stage -Filter '*-asset.zip' -Recurse | Select-Object -First 1
+      if ($inner) { [System.IO.Compression.ZipFile]::ExtractToDirectory($inner.FullName, $asset) } else { Move-Item $stage $asset; $stage = $null }
+      if ($stage) { Remove-Item $stage -Recurse -Force }
+      $ij = Get-ChildItem $asset -Filter 'item.json' -Recurse | Select-Object -First 1
+      if ($ij) { Copy-Item $ij.FullName (Join-Path $dir 'item.json') }
+      $files = @(Get-ChildItem $asset -Recurse -File | ForEach-Object { $_.FullName.Substring($asset.Length + 1) })
+      @{ name = $it.name; type = $it.type; sha256 = $it.sha256; at = (Get-Date).ToString('s'); kitVersion = $KitVersion; files = $files } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $dir 'unpacked.json') -Encoding UTF8
+    } catch { $g.PairCode.Text = "unpack failed: $($_.Exception.Message)"; Send-Report 'failed' 'unpack'; return }
+    Write-Log 'WAOV-I56' "unpacked $($it.name)"; Send-Report 'unpacked' ''
+    $g.Unpack.Visibility = 'Collapsed'; $g.PairCode.Text = "[v] $($it.name) unpacked into $dir"; $script:QItem = $null
+    & $syncNow
+  })
+  # STORE LIST once paired (2026-11-14): Avatars / Items / Worlds, each row has DOWNLOAD that opens its Google Drive page
+  $showCatalog = {
+    if (-not (Test-Path $PairFile)) { $g.Catalog.Visibility = 'Collapsed'; return }
+    try { $tok = (Get-Content $PairFile -Raw | ConvertFrom-Json).token
+      $cr = Invoke-RestMethod -Method Post -Uri $PairApi -ContentType 'application/json' -Body (@{ op = 'widget.catalog'; token = $tok } | ConvertTo-Json) -TimeoutSec 10
+    } catch { return }
+    $g.Catalog.Children.Clear()
+    $script:CatalogNames = @{}
+    if ($cr.naming) { $script:Naming = @($cr.naming) }
+    foreach ($tp in 'avi', 'item', 'world') { foreach ($r in @($cr.catalog.$tp)) { if ($r.name) { $script:CatalogNames[([string]$r.name).ToLower()] = $tp }; if ($r.code) { $script:CatalogNames[([string]$r.code).ToLower()] = $tp } } }
+    foreach ($pair in @(@('avi','AVATARS'), @('item','ITEMS'), @('world','WORLDS'))) {
+      $h = New-Object System.Windows.Controls.TextBlock; $h.Text = " $($pair[1]) "; $h.FontWeight = 'Bold'; $h.Foreground = '#000000'; $h.Background = '#FFFF55'
+      $h.HorizontalAlignment = 'Left'; $h.Margin = '0,6,0,2'; [void]$g.Catalog.Children.Add($h)
+      $rows = @($cr.catalog.($pair[0]))
+      if (-not $rows.Count) { $e = New-Object System.Windows.Controls.TextBlock; $e.Text = '  nothing here yet'; $e.Foreground = '#AAAAAA'; [void]$g.Catalog.Children.Add($e); continue }
+      foreach ($r in $rows) {
+        $line = New-Object System.Windows.Controls.DockPanel; $line.Margin = '0,2,0,2'
+        if ($r.page) {
+          $b = New-Object System.Windows.Controls.Button; $b.Content = 'DOWNLOAD'; $b.Style = $w.FindResource('Px'); $b.Tag = [string]$r.page
+          [System.Windows.Controls.DockPanel]::SetDock($b, 'Right')
+          $b.Add_Click({ param($sender) Play-Beep; Write-Log 'WAOV-I57' "store list download opened $($sender.Tag)"; Start-Process $sender.Tag })
+          [void]$line.Children.Add($b)
+        }
+        $t = New-Object System.Windows.Controls.TextBlock; $t.Text = "  $($r.name)   $($r.code)"; $t.Foreground = '#FFFFFF'; $t.VerticalAlignment = 'Center'; [void]$line.Children.Add($t)
+        [void]$g.Catalog.Children.Add($line)
+      }
+    }
+    $g.Catalog.Visibility = 'Visible'
+    $g.SyncWhere.Text = "[v] SYNCED with the backdoor store · $($cr.count) assets · $((Get-Date).ToString('HH:mm'))"
+  }
+  & $showCatalog
+  $script:QTimer = New-Object System.Windows.Threading.DispatcherTimer; $script:QTimer.Interval = [TimeSpan]::FromSeconds(10)
+  $script:QTimer.Add_Tick({ if (-not $script:QItem) { & $checkQueue } }); $script:QTimer.Start(); & $checkQueue
+  $g.Download.Add_Click({ Play-Beep; Write-Log 'WAOV-I50' 'download avatars: opened the waov.art store'; Start-Process 'https://waov.art/perk-center#store' })
+  $g.Pair.Add_Click({
+    Play-Beep
+    try {
+      $r = Invoke-RestMethod -Method Post -Uri $PairApi -ContentType 'application/json' -Body (@{ op = 'widget.code'; pcName = $env:COMPUTERNAME } | ConvertTo-Json) -TimeoutSec 15
+    } catch { $g.PairCode.Text = 'could not reach waov.art (WAOV-E70)'; Write-Log 'WAOV-E70' "pair code request failed: $($_.Exception.Message)"; return }
+    $script:PairReq = $r; $script:PairTicks = 0
+    $g.PairCode.Text = "Your code: $($r.code)   Type it into PAIR WIDGET on waov.art (bottom right yellow button)."
+    Write-Log 'WAOV-I51' "pair code shown $($r.code)"
+    Start-Process 'https://waov.art/perk-center#store'
+    if ($script:PairTimer) { $script:PairTimer.Stop() }
+    $script:PairTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:PairTimer.Interval = [TimeSpan]::FromSeconds(3)
+    $script:PairTimer.Add_Tick({
+      $script:PairTicks++
+      try {
+        $p = Invoke-RestMethod -Method Post -Uri $PairApi -ContentType 'application/json' -Body (@{ op = 'widget.poll'; code = $script:PairReq.code; pollKey = $script:PairReq.pollKey } | ConvertTo-Json) -TimeoutSec 10
+        if ($p.status -eq 'paired' -and $p.token) {
+          $script:PairTimer.Stop()
+          @{ token = $p.token; name = $p.name; at = (Get-Date).ToString('s') } | ConvertTo-Json | Set-Content -Path $PairFile -Encoding UTF8
+          $g.Pair.Content = 'PAIRED'; $g.PairCode.Text = "[v] paired with $($p.name)"; Play-Beep; & $showCatalog
+          Write-Log 'WAOV-I52' 'widget paired with a waov.art account'
+        } elseif ($p.status -eq 'expired') { $script:PairTimer.Stop(); $g.PairCode.Text = 'code expired, click PAIR again' }
+      } catch { }
+    })
+    $script:PairTimer.Start()
+  })
   $g.Mute.Add_Click({
     $script:Muted = -not $script:Muted
     if ($script:Muted) { $g.Mute.Content = 'SOUND ON'; if ($script:Music) { $script:Music.Stop() } } else { $g.Mute.Content = 'MUTE'; Play-Beep }
