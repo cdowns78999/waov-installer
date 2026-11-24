@@ -12,6 +12,10 @@
     -NoSystem     skip shortcuts and the Apps list entry               -SnapDir   save window PNGs, then close
     -LatestUrl    use another latest.json (file:// for tests)          -NoUpdateCheck   skip the GitHub check
     -VccSettings  use another VCC settings.json (slider 3 tests)        -NoLaunch  slider 3 never starts Unity
+    -DryRun       GO runs a 2 second stand-in instead of winget/Hub/pip  -AutoGo  press GO by itself (snapshot runs)
+    -TestLink     paste this Google Drive link and press RUN by itself (snapshot runs)
+  2.0: ONE screen with four clickable dots (1 CHECKS, 2 DOWNLOADS, 3 MAP ITEM, 4 VRCHAT). GO installs every missing tool
+  with one install bar; RUN downloads a pasted Drive link with launcher\drive-fetch.py; VRChat sign-in is always the buyer's own.
   Slider 3 MAP ITEM TO AVATAR lives in launcher\map-avatar.ps1 (dot-sourced below), install.txt section 5b.
   Update rule (every open, install or -Menu): read latest.json from the waov-installer GitHub release. Newer and signed
   with Chad's key -> download, verify, and hand over to that newer kit. Offline -> run this kit (WAOV-W30).
@@ -28,11 +32,14 @@ param(
   [switch]$NoUpdateCheck,
   [string]$ZipRootOverride = "",
   [string]$VccSettings = "",
-  [switch]$NoLaunch
+  [switch]$NoLaunch,
+  [switch]$DryRun,
+  [switch]$AutoGo,
+  [string]$TestLink = ""
 )
 
 $ErrorActionPreference = 'Stop'
-$KitVersion = '1.0'
+$KitVersion = '2.0'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 
 # ---------- paths ----------
@@ -75,8 +82,26 @@ $Tools = @(
   @{ Key = 'CreatorCompanion'; Label = 'VRChat Creator Companion'; Winget = 'VRChat.CreatorCompanion'; Page = 'https://vrchat.com/download/vcc'; Ok = 'WAOV-I10'; Bad = 'WAOV-E10' },
   @{ Key = 'UnityHub'; Label = 'Unity Hub'; Winget = 'Unity.UnityHub'; Page = 'https://unity.com/download'; Ok = 'WAOV-I11'; Bad = 'WAOV-E11' },
   @{ Key = 'Unity'; Label = 'Unity 2022.3.22f1'; Winget = ''; Page = 'https://unity.com/releases/editor/archive'; Ok = 'WAOV-I12'; Bad = 'WAOV-E12' },
-  @{ Key = 'Blender'; Label = 'Blender'; Winget = 'BlenderFoundation.Blender'; Page = 'https://www.blender.org/download/'; Ok = 'WAOV-I13'; Bad = 'WAOV-E13' }
+  @{ Key = 'Blender'; Label = 'Blender'; Winget = 'BlenderFoundation.Blender'; Page = 'https://www.blender.org/download/'; Ok = 'WAOV-I13'; Bad = 'WAOV-E13' },
+  @{ Key = 'Python'; Label = 'Python 3.12 + gdown'; Winget = 'Python.Python.3.12'; Page = 'https://www.python.org/downloads/'; Ok = 'WAOV-I15'; Bad = 'WAOV-E15' }
 )
+# 2.0: installs.json ships INSIDE the signed kit and may only pick from this allow-list of winget ids (WAOV-E16 when refused)
+$AllowedIds = @('VRChat.CreatorCompanion', 'Unity.UnityHub', 'BlenderFoundation.Blender', 'Python.Python.3.12')
+$mf = Join-Path $Launcher 'installs.json'
+if (Test-Path $mf) {
+  try {
+    $mj = Get-Content $mf -Raw | ConvertFrom-Json
+    foreach ($t in $Tools) {
+      $e = @($mj.tools) | Where-Object { $_.key -eq $t.Key } | Select-Object -First 1
+      if ($e -and $e.winget) { if ($AllowedIds -contains [string]$e.winget) { $t.Winget = [string]$e.winget } else { Write-Log 'WAOV-E16' "installs.json id refused: $($e.winget)" } }
+    }
+  } catch { Write-Log 'WAOV-E16' "installs.json unreadable: $($_.Exception.Message)" }
+}
+# 2.0: the base Google Drive link lives in launcher\drive.json (DriveLink). Empty = the DOWNLOAD AVATARS button opens the store page.
+$DriveLink = ''
+$df = Join-Path $Launcher 'drive.json'
+if (Test-Path $df) { try { $DriveLink = [string]((Get-Content $df -Raw | ConvertFrom-Json).DriveLink) } catch { } }
+$script:DrySet = @{}
 $UnityVersion = '2022.3.22f1'
 $UnityChangeset = '887be4894c44'   # Unity 2022.3.22f1 changeset, used by the Hub headless install
 
@@ -100,7 +125,20 @@ function Get-HubExe {
   foreach ($p in @("$env:ProgramFiles\Unity Hub\Unity Hub.exe", "$env:LOCALAPPDATA\Programs\Unity Hub\Unity Hub.exe")) { if (Test-Path $p) { return $p } }
   return $null
 }
+function Get-PythonExe {
+  $c = @()
+  $c += @(Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Filter python.exe -Recurse -Depth 1 -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | ForEach-Object { $_.FullName })
+  $c += @(Get-ChildItem "$env:ProgramFiles\Python3*" -Filter python.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+  $cmd = Get-Command python -ErrorAction SilentlyContinue
+  if ($cmd -and $cmd.Source -notmatch 'WindowsApps') { $c += $cmd.Source }
+  foreach ($p in $c) { if ($p -and (Test-Path $p)) { return $p } }
+  return $null
+}
+function Test-PyLibs([string]$py) {
+  try { $p = Start-Process -FilePath $py -ArgumentList @('-c', '"import gdown, PIL"') -PassThru -Wait -WindowStyle Hidden; return ($p.ExitCode -eq 0) } catch { return $false }
+}
 function Test-Tool([string]$Key) {
+  if ($script:DrySet[$Key]) { return $true }
   if ($Simulated -contains $Key) { return $false }
   $names = Get-UninstallNames
   switch ($Key) {
@@ -114,6 +152,7 @@ function Test-Tool([string]$Key) {
       return $false
     }
     'Blender' { return [bool](($names -like 'Blender*') -or (Get-ChildItem "$env:ProgramFiles\Blender Foundation" -Filter blender.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)) }
+    'Python' { $py = Get-PythonExe; if (-not $py) { return $false }; return (Test-PyLibs $py) }
   }
   return $false
 }
@@ -215,7 +254,7 @@ function Step-Check {
     if ($ok) { Write-Log $t.Ok "$($t.Label) found" } else { Write-Log $t.Bad "$($t.Label) not found" }
   }
   $n = @($script:ToolState.Values | Where-Object { $_ }).Count
-  return "tool check: $n of 4 installed"
+  return "tool check: $n of $($Tools.Count) installed"
 }
 
 # ---------- uninstall ----------
@@ -331,7 +370,7 @@ function Img([string]$name) {
 function Show-Menu {
   $x = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-  Title="We Are One Voice" Width="860" Height="560" WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize" Background="#000000"
+  Title="We Are One Voice" Width="860" Height="620" WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize" Background="#000000"
   TextOptions.TextRenderingMode="Aliased" TextOptions.TextFormattingMode="Display" FontFamily="Consolas">
   <Grid x:Name="Root" Opacity="0" Margin="10" Background="#0000AA">
     <Border BorderBrush="#55FFFF" BorderThickness="3"/>
@@ -346,9 +385,10 @@ function Show-Menu {
           <TextBlock x:Name="Cursor" Text="_" FontSize="26" FontWeight="Bold" Foreground="#FFFFFF"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" Margin="0,12,0,14">
-          <TextBlock x:Name="Dot1" Text="(o) 1 RUN THE CHECK" FontSize="15" FontWeight="Bold" Foreground="#FFFFFF" Margin="0,0,30,0"/>
-          <TextBlock x:Name="Dot2" Text="( ) 2 SYNC YOUR WAOV ASSETS" FontSize="15" FontWeight="Bold" Foreground="#AAAAAA" Margin="0,0,30,0"/>
-          <TextBlock x:Name="Dot3" Text="( ) 3 MAP ITEM TO AVATAR" FontSize="15" FontWeight="Bold" Foreground="#AAAAAA"/>
+          <TextBlock x:Name="Dot1" Text="(o) 1 CHECKS" FontSize="15" FontWeight="Bold" Foreground="#FFFFFF" Margin="0,0,26,0" Cursor="Hand"/>
+          <TextBlock x:Name="Dot2" Text="( ) 2 DOWNLOADS" FontSize="15" FontWeight="Bold" Foreground="#AAAAAA" Margin="0,0,26,0" Cursor="Hand"/>
+          <TextBlock x:Name="Dot3" Text="( ) 3 MAP ITEM" FontSize="15" FontWeight="Bold" Foreground="#AAAAAA" Margin="0,0,26,0" Cursor="Hand"/>
+          <TextBlock x:Name="Dot4" Text="( ) 4 VRCHAT" FontSize="15" FontWeight="Bold" Foreground="#AAAAAA" Cursor="Hand"/>
         </StackPanel>
         <Rectangle Height="3" Fill="#55FFFF"/>
       </StackPanel>
@@ -359,8 +399,17 @@ function Show-Menu {
         <Button x:Name="Recheck" DockPanel.Dock="Right" Content="RE-CHECK" Style="{DynamicResource Px}"/>
       </DockPanel>
       <Grid>
-        <StackPanel x:Name="Slide1" Margin="4,16,4,0"/>
-        <DockPanel x:Name="Slide2" Visibility="Collapsed" Margin="4,12,4,0">
+        <DockPanel x:Name="Slide1" Margin="4,10,4,0">
+          <StackPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+            <DockPanel>
+              <Button x:Name="Go" DockPanel.Dock="Left" Content="GO" Style="{DynamicResource Px}" Margin="0,0,14,0" FontSize="18" Padding="30,6"/>
+              <TextBlock x:Name="GoText" FontSize="15" FontWeight="Bold" Foreground="#FFFF55" VerticalAlignment="Center" TextWrapping="Wrap"/>
+            </DockPanel>
+            <Grid x:Name="BarBox" Height="24" Margin="0,8,0,0"><Border BorderBrush="#FFFFFF" BorderThickness="3"/><Border x:Name="BarFill" Background="#55FF55" HorizontalAlignment="Left" Width="0" Margin="3"/></Grid>
+          </StackPanel>
+          <StackPanel x:Name="Rows1"/>
+        </DockPanel>
+        <DockPanel x:Name="Slide2" Visibility="Collapsed" Margin="4,8,4,0">
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
             <Button x:Name="Sync" Content="SYNC ASSETS" Style="{DynamicResource Px}" Margin="0"/>
             <Button x:Name="Download" Content="DOWNLOAD AVATARS" Style="{DynamicResource Px}"/>
@@ -370,6 +419,30 @@ function Show-Menu {
             <TextBlock x:Name="Flash" Text="  [v] SYNCED" FontSize="20" FontWeight="Bold" Foreground="#55FF55" Opacity="0" VerticalAlignment="Center"/>
           </StackPanel>
           <TextBlock DockPanel.Dock="Top" x:Name="PairCode" FontSize="14" FontWeight="Bold" Foreground="#FFFF55" Margin="0,8,0,0" TextWrapping="Wrap"/>
+          <DockPanel DockPanel.Dock="Top" Margin="0,8,0,0">
+            <Button x:Name="Run" DockPanel.Dock="Right" Content="RUN" Style="{DynamicResource Px}" Margin="8,0,0,0" Padding="22,6"/>
+            <TextBox x:Name="LinkBox" FontSize="14" Background="#000000" Foreground="#FFFFFF" BorderBrush="#55FFFF" BorderThickness="2" CaretBrush="#FFFFFF" Padding="4" VerticalContentAlignment="Center"/>
+          </DockPanel>
+          <TextBlock DockPanel.Dock="Top" x:Name="LinkHint" Text="Pick your zips in the Drive folder, paste the link here, press RUN." FontSize="12" Foreground="#AAAAAA" Margin="0,3,0,0"/>
+          <Grid DockPanel.Dock="Top" x:Name="FetchBox" Height="16" Margin="0,6,0,0"><Border BorderBrush="#FFFFFF" BorderThickness="2"/><Border x:Name="FetchFill" Background="#55FFFF" HorizontalAlignment="Left" Width="0" Margin="2"/></Grid>
+          <TextBlock DockPanel.Dock="Top" x:Name="FetchText" FontSize="13" FontWeight="Bold" Foreground="#FFFF55" Margin="0,3,0,0" TextWrapping="Wrap"/>
+          <Border DockPanel.Dock="Bottom" x:Name="UpTile" Visibility="Collapsed" BorderBrush="#FFFF55" BorderThickness="3" Background="#000000" Margin="0,8,0,0" Padding="10,6">
+            <DockPanel>
+              <Button x:Name="UpGo" DockPanel.Dock="Right" Content="CONTINUE" Style="{DynamicResource Px}"/>
+              <StackPanel>
+                <TextBlock Text="LOG INTO VRCHAT TO CONTINUE" FontSize="16" FontWeight="Bold" Foreground="#FFFF55"/>
+                <TextBlock Text="You sign in yourself, in your own browser or the SDK. This launcher never asks for your password." FontSize="12" Foreground="#FFFFFF" TextWrapping="Wrap"/>
+              </StackPanel>
+            </DockPanel>
+          </Border>
+          <Grid DockPanel.Dock="Top" x:Name="ResultBox" Visibility="Collapsed" Margin="0,8,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="184"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border BorderBrush="#55FFFF" BorderThickness="2" Width="176" Height="100" HorizontalAlignment="Left"><Image x:Name="FeatureImg" Stretch="Uniform" RenderOptions.BitmapScalingMode="NearestNeighbor"/></Border>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+              <TextBlock x:Name="ResultText" FontSize="15" FontWeight="Bold" Foreground="#55FF55" TextWrapping="Wrap" Margin="0,0,0,8"/>
+              <Button x:Name="Upload" Content="UPLOAD TO VRCHAT ACCOUNT" Style="{DynamicResource Px}" IsEnabled="False" HorizontalAlignment="Left" Margin="0"/>
+            </StackPanel>
+          </Grid>
           <StackPanel DockPanel.Dock="Top" x:Name="Catalog" Margin="0,8,0,0" Visibility="Collapsed"/>
           <TextBlock DockPanel.Dock="Top" x:Name="SyncWhere" FontSize="12" Foreground="#AAAAAA" Margin="0,8,0,4"/>
           <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="SyncList"/></ScrollViewer>
@@ -393,6 +466,14 @@ function Show-Menu {
             <ScrollViewer VerticalScrollBarVisibility="Auto"><TextBlock x:Name="MapSteps" FontSize="12" Foreground="#FFFFFF" TextWrapping="Wrap"/></ScrollViewer>
           </DockPanel>
         </Grid>
+        <StackPanel x:Name="Slide4" Visibility="Collapsed" Margin="4,12,4,0">
+          <TextBlock Text="LOG INTO VRCHAT TO CONTINUE" FontSize="22" FontWeight="Bold" Foreground="#FFFF55"/>
+          <TextBlock x:Name="Slide4Text" FontSize="15" Foreground="#FFFFFF" TextWrapping="Wrap" Margin="0,12,0,14"/>
+          <StackPanel Orientation="Horizontal">
+            <Button x:Name="OpenHub" Content="OPEN UNITY HUB" Style="{DynamicResource Px}" Margin="0,0,10,0"/>
+            <Button x:Name="OpenVrc" Content="OPEN MY VRCHAT AVATARS" Style="{DynamicResource Px}" Margin="0"/>
+          </StackPanel>
+        </StackPanel>
       </Grid>
     </DockPanel>
   </Grid>
@@ -401,7 +482,7 @@ function Show-Menu {
   $w = New-Xaml $x
   $w.Resources.MergedDictionaries.Add((New-Xaml $Styles))
   try { $w.Icon = Img 'waov.ico' } catch { }
-  $g = @{}; foreach ($n in 'Root','Cursor','Dot1','Dot2','Dot3','Mute','Next','Back','Recheck','Slide1','Slide2','Slide3','Sync','Download','Pair','PairCode','Get','Unpack','Catalog','Flash','SyncWhere','SyncList','Stamp','StampNote','MapOwn','AviList','ItemList','MapRows','Approve','MapSteps','PartPick','UCheck') { $g[$n] = $w.FindName($n) }
+  $g = @{}; foreach ($n in 'Root','Cursor','Dot1','Dot2','Dot3','Dot4','Mute','Next','Back','Recheck','Slide1','Slide2','Slide3','Slide4','Sync','Download','Pair','PairCode','Get','Unpack','Catalog','Flash','SyncWhere','SyncList','Stamp','StampNote','MapOwn','AviList','ItemList','MapRows','Approve','MapSteps','PartPick','UCheck','Rows1','Go','GoText','BarBox','BarFill','Run','LinkBox','LinkHint','FetchBox','FetchFill','FetchText','ResultBox','FeatureImg','ResultText','Upload','UpTile','UpGo','Slide4Text','OpenHub','OpenVrc') { $g[$n] = $w.FindName($n) }
   if (-not $script:HasMap) { $g.Dot3.Visibility = 'Collapsed' }
   $g.Stamp.Text = "v$KitVersion"
   if ($script:UpdateNote -and $script:UpdateNote -ne 'offline') { $g.Stamp.Foreground = '#FFFF55'; $g.StampNote.Text = 'UPDATE AVAILABLE: ' + $script:UpdateNote }
@@ -409,10 +490,10 @@ function Show-Menu {
   if ($script:Muted) { $g.Mute.Content = 'SOUND ON' }
 
   $render1 = {
-    $g.Slide1.Children.Clear()
+    $g.Rows1.Children.Clear()
     foreach ($t in $Tools) {
       $ok = [bool]$script:ToolState[$t.Key]
-      $row = New-Object System.Windows.Controls.DockPanel; $row.Margin = '0,0,0,14'; $row.LastChildFill = $false
+      $row = New-Object System.Windows.Controls.DockPanel; $row.Margin = '0,0,0,9'; $row.LastChildFill = $false
       $mark = New-Object System.Windows.Controls.TextBlock
       $mark.FontSize = 22; $mark.FontWeight = 'Bold'; $mark.Width = 56; $mark.VerticalAlignment = 'Center'
       if ($ok) { $mark.Text = '[v]'; $mark.Foreground = '#55FF55' } else { $mark.Text = '[X]'; $mark.Foreground = '#FF5555' }
@@ -434,34 +515,85 @@ function Show-Menu {
         $btn.Add_Click({ param($s, $e) Play-Beep; & $installTool $s })
         [System.Windows.Controls.DockPanel]::SetDock($btn, 'Right'); [void]$row.Children.Add($btn)
       }
-      [void]$g.Slide1.Children.Add($row)
+      [void]$g.Rows1.Children.Add($row)
     }
+    $miss = @($Tools | Where-Object { -not $script:ToolState[$_.Key] }).Count
+    if (-not ($script:QTimer2 -and $script:QTimer2.IsEnabled)) {
+      if ($miss) { $g.Go.IsEnabled = $true; $g.GoText.Text = "$miss missing. Press GO and I install them one after another."; & $setBar 0 '' }
+      else { $g.Go.IsEnabled = $false; $g.GoText.Text = '[v] Everything is installed. Press NEXT.'; & $setBar 1 '' }
+    }
+    if ($paintDots) { & $paintDots }
   }
   $script:GetIt = @{}
+  $script:Queue = @(); $script:QPos = 0; $script:QProc = $null; $script:QPhase = ''; $script:QStart = Get-Date; $script:QTimer2 = $null
+  $setBar = {
+    param([double]$f, [string]$txt)
+    $wd = [math]::Max(0, $g.BarBox.ActualWidth - 6)
+    $g.BarFill.Width = [math]::Max(0, [math]::Min(1, $f)) * $wd
+    if ($txt) { $g.GoText.Text = $txt }
+  }
+  # starts the process for the tool at the head of the queue (winget, Unity Hub headless, or pip); $false = nothing can run
+  $startPhase = {
+    $key = $script:Queue[$script:QPos]
+    $t = $Tools | Where-Object { $_.Key -eq $key } | Select-Object -First 1
+    $script:QPhase = ''
+    if ($key -eq 'Unity') {
+      $hub = Get-HubExe; if (-not $hub -and -not $DryRun) { return $false }
+      $file = $hub; $argv = @('--', '--headless', 'install', '--version', $UnityVersion, '--changeset', $UnityChangeset, '--module', 'windows-mono'); $script:QPhase = 'hub'
+    } elseif ($key -eq 'Python' -and (Get-PythonExe)) {
+      $file = Get-PythonExe; $argv = @('-m', 'pip', 'install', '--user', '--quiet', 'gdown', 'pillow'); $script:QPhase = 'pip'
+    } else {
+      if (-not $DryRun -and -not (Get-Command winget -ErrorAction SilentlyContinue)) { return $false }
+      if (-not $t.Winget -and -not $DryRun) { return $false }
+      $file = 'winget'; $argv = @('install', '--id', $t.Winget, '--exact', '--silent', '--accept-package-agreements', '--accept-source-agreements'); $script:QPhase = 'winget'
+    }
+    if ($DryRun) { $file = 'cmd.exe'; $argv = @('/c', 'timeout /t 2 >nul') }
+    $script:QStart = Get-Date
+    try { $script:QProc = Start-Process -FilePath $file -ArgumentList $argv -PassThru -WindowStyle Hidden } catch { $script:QProc = $null; return $false }
+    return $true
+  }
+  $runQueue = {
+    param($keys)
+    if ($script:QTimer2 -and $script:QTimer2.IsEnabled) { return }
+    $script:Queue = @($keys | Where-Object { $_ }); $script:QPos = 0; $script:QProc = $null; $script:QFail = @()
+    if (-not $script:Queue.Count) { & $setBar 1 '[v] Everything is already installed.'; return }
+    $g.Go.IsEnabled = $false
+    $script:QTimer2 = New-Object System.Windows.Threading.DispatcherTimer; $script:QTimer2.Interval = [TimeSpan]::FromSeconds(1)
+    $script:QTimer2.Add_Tick({
+      $finish = {
+        $script:QTimer2.Stop(); $g.Go.IsEnabled = $true
+        if ($script:QFail.Count) { $g.GoText.Text = 'Some tools need the GET IT button: ' + ($script:QFail -join ', ') } else { $g.GoText.Text = '[v] All done. Press NEXT.' }
+        & $setBar 1 ''; & $render1
+      }
+      if (-not $script:QProc) {
+        while ($script:QPos -lt $script:Queue.Count -and (Test-Tool $script:Queue[$script:QPos])) { $script:ToolState[$script:Queue[$script:QPos]] = $true; $script:QPos++ }
+        if ($script:QPos -ge $script:Queue.Count) { & $finish; return }
+        $k = $script:Queue[$script:QPos]; $lab = ($Tools | Where-Object { $_.Key -eq $k }).Label
+        if ($k -eq 'Unity' -and -not (Test-Tool 'UnityHub')) { $script:QFail += $lab; $script:GetIt[$k] = $true; Write-Log 'WAOV-E14' "$lab skipped, Unity Hub is not installed"; $script:QPos++; return }
+        if (-not (& $startPhase)) { $script:QFail += $lab; $script:GetIt[$k] = $true; Write-Log 'WAOV-E14' "$lab could not start, GET IT offered"; $script:QPos++; & $render1; return }
+        return
+      }
+      $k = $script:Queue[$script:QPos]; $lab = ($Tools | Where-Object { $_.Key -eq $k }).Label
+      $secs = ((Get-Date) - $script:QStart).TotalSeconds
+      & $setBar (($script:QPos + [math]::Min(0.9, $secs / 150)) / $script:Queue.Count) ("{0} of {1}: installing {2} ..." -f ($script:QPos + 1), $script:Queue.Count, $lab)
+      if ($script:QProc.HasExited) {
+        if ($DryRun) { $script:DrySet[$k] = $true }
+        $ok = Test-Tool $k
+        if (-not $ok -and $k -eq 'Python' -and $script:QPhase -eq 'winget' -and (Get-PythonExe)) { if (& $startPhase) { return } }   # Python is in, now add gdown and pillow
+        $script:ToolState[$k] = $ok
+        if ($ok) { Write-Log 'WAOV-I14' "$lab installed by the buyer's GO click and verified" }
+        else { Write-Log 'WAOV-E14' "$lab install failed (exit $($script:QProc.ExitCode)), GET IT offered"; $script:GetIt[$k] = $true; $script:QFail += $lab }
+        $script:QProc = $null; $script:QPos++
+        & $render1
+      }
+    })
+    $script:QTimer2.Start()
+  }
   $installTool = {
     param($btn)
     $t = $btn.Tag
     if ([string]$btn.Content -eq 'GET IT') { Start-Process $t.Page; return }
-    $btn.IsEnabled = $false; $btn.Content = 'INSTALLING...'
-    if ($t.Key -eq 'Unity') {
-      $hub = Get-HubExe
-      $p = Start-Process -FilePath $hub -ArgumentList @('--', '--headless', 'install', '--version', $UnityVersion, '--changeset', $UnityChangeset, '--module', 'windows-mono') -PassThru -WindowStyle Hidden
-    } else {
-      $p = Start-Process -FilePath 'winget' -ArgumentList @('install', '--id', $t.Winget, '--exact', '--silent', '--accept-package-agreements', '--accept-source-agreements') -PassThru -WindowStyle Hidden
-    }
-    $timer = New-Object System.Windows.Threading.DispatcherTimer; $timer.Interval = [TimeSpan]::FromSeconds(2)
-    $timer.Tag = @{ P = $p; T = $t }
-    $timer.Add_Tick({ param($s, $e)
-      $d = $s.Tag
-      if (-not $d.P.HasExited) { return }
-      $s.Stop()
-      $ok = Test-Tool $d.T.Key
-      $script:ToolState[$d.T.Key] = $ok
-      if ($ok) { Write-Log 'WAOV-I14' "$($d.T.Label) installed by the buyer's click and verified" }
-      else { Write-Log 'WAOV-E14' "$($d.T.Label) install failed (exit $($d.P.ExitCode)), GET IT offered"; $script:GetIt[$d.T.Key] = $true }
-      & $render1
-    })
-    $timer.Start()
+    & $runQueue @($t.Key)
   }
 
   $syncNow = {
@@ -474,7 +606,8 @@ function Show-Menu {
       [void]$g.SyncList.Children.Add($h)
       $dir = Join-Path $AssetsRoot $Sub[$k]
       $files = @(Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue)
-      if (-not $files.Count) {
+      $dirs = @(Get-ChildItem -Path $dir -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'unpacked.json') })
+      if (-not $files.Count -and -not $dirs.Count) {
         $e = New-Object System.Windows.Controls.TextBlock; $e.Text = '  nothing here yet'; $e.FontSize = 14; $e.Foreground = '#AAAAAA'
         [void]$g.SyncList.Children.Add($e)
       }
@@ -491,7 +624,13 @@ function Show-Menu {
         }
         [void]$g.SyncList.Children.Add($line)
       }
+      foreach ($d in $dirs) {
+        $dl = New-Object System.Windows.Controls.TextBlock; $dl.FontSize = 14; $dl.Margin = '12,0,0,2'; $dl.TextWrapping = 'Wrap'; $dl.Foreground = '#55FF55'
+        $dl.Text = "$($Sub[$k])\$($d.Name)   unpacked"; $total++
+        [void]$g.SyncList.Children.Add($dl)
+      }
     }
+    if ($total -gt 0) { $script:Ready4 = $true; if ($paintDots) { & $paintDots } }
     Write-Log 'WAOV-I09' "sync scan finished, $total WAOV assets found"
     $a = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
     foreach ($kf in @(@(0, 0), @(0.15, 1), @(0.9, 1), @(1.6, 0))) {
@@ -577,33 +716,66 @@ function Show-Menu {
       try {
         $vcc = Open-UnpackedInUnity $script:MapPick.Avi.path $script:MapPick.Item
         $g.MapSteps.Text = "VCC: $vcc. Unity is opening.`nDo these in Unity:`n`n" + ((Get-UnpackedSteps $script:MapPick.Item $script:MapPick.Part) -join "`n")
-        $g.MapSteps.Foreground = '#FFFFFF'
+        $g.MapSteps.Foreground = '#FFFFFF'; $script:MapDone = $true; & $paintDots
       } catch {
         $g.MapSteps.Text = 'problem: ' + $_.Exception.Message; $g.MapSteps.Foreground = '#FF5555'; $g.Approve.IsEnabled = $true
       }
     })
   }
 
-  $script:Slide = 1
+  $script:Slide = 1; $script:Skip1 = $false; $script:Ready4 = $false; $script:MapDone = $false
+  $allGreen = { -not (@($Tools | Where-Object { -not $script:ToolState[$_.Key] }).Count) }
+  $reachable = {
+    param([int]$n)
+    if ($SnapDir) { return $true }
+    switch ($n) {
+      1 { return $true }
+      2 { return [bool]((& $allGreen) -or $script:Skip1) }
+      3 { return [bool]($script:HasMap -and ((& $allGreen) -or $script:Skip1) -and (@(Get-UnpackedItems).Count -gt 0)) }
+      4 { return [bool]$script:Ready4 }
+    }
+    return $false
+  }
+  $dotNames = @('1 CHECKS', '2 DOWNLOADS', '3 MAP ITEM', '4 VRCHAT')
+  $paintDots = {
+    $dots = @($g.Dot1, $g.Dot2, $g.Dot3, $g.Dot4)
+    for ($i = 0; $i -lt 4; $i++) {
+      $n = $i + 1; $ok = & $reachable $n
+      $done = switch ($n) { 1 { [bool](& $allGreen) } 2 { [bool]$script:Ready4 } 3 { [bool]$script:MapDone } default { $false } }
+      if ($n -eq $script:Slide) { $mark = '(o) '; $col = '#FFFFFF' }
+      elseif ($done) { $mark = '[v] '; $col = '#55FF55' }
+      elseif ($ok) { $mark = '( ) '; $col = '#AAAAAA' }
+      else { $mark = '( ) '; $col = '#666666' }
+      $dots[$i].Text = $mark + $dotNames[$i]; $dots[$i].Foreground = $col
+      $dots[$i].Cursor = $(if ($ok) { 'Hand' } else { 'Arrow' })
+    }
+  }
   $go = {
     param([int]$n)
-    $max = 2; if ($script:HasMap) { $max = 3 }
-    if ($n -lt 1) { $n = 1 }; if ($n -gt $max) { $n = $max }
+    if ($n -lt 1) { $n = 1 }; if ($n -gt 4) { $n = 4 }
+    if (-not (& $reachable $n)) { return }
     $script:Slide = $n
-    $names = @('1 RUN THE CHECK', '2 SYNC YOUR WAOV ASSETS', '3 MAP ITEM TO AVATAR')
-    $slides = @($g.Slide1, $g.Slide2, $g.Slide3); $dots = @($g.Dot1, $g.Dot2, $g.Dot3)
-    for ($i = 0; $i -lt 3; $i++) {
-      if ($i + 1 -eq $n) { $slides[$i].Visibility = 'Visible'; $dots[$i].Text = '(o) ' + $names[$i]; $dots[$i].Foreground = '#FFFFFF' }
-      else { $slides[$i].Visibility = 'Collapsed'; $dots[$i].Text = '( ) ' + $names[$i]; $dots[$i].Foreground = '#AAAAAA' }
-    }
-    if ($n -lt $max) { $g.Next.Visibility = 'Visible' } else { $g.Next.Visibility = 'Collapsed' }
+    $slides = @($g.Slide1, $g.Slide2, $g.Slide3, $g.Slide4)
+    for ($i = 0; $i -lt 4; $i++) { if ($i + 1 -eq $n) { $slides[$i].Visibility = 'Visible' } else { $slides[$i].Visibility = 'Collapsed' } }
+    & $paintDots
+    $hasNext = $false; for ($m = $n + 1; $m -le 4; $m++) { if (& $reachable $m) { $hasNext = $true; break } }
+    if ($n -eq 1 -or $hasNext) { $g.Next.Visibility = 'Visible' } else { $g.Next.Visibility = 'Collapsed' }
     if ($n -gt 1) { $g.Back.Visibility = 'Visible' } else { $g.Back.Visibility = 'Collapsed' }
     if ($n -eq 1) { $g.Recheck.Visibility = 'Visible' } else { $g.Recheck.Visibility = 'Collapsed' }
     if ($n -eq 3) { & $fillLists; & $render3 }
+    if ($n -eq 4) {
+      $g.Slide4Text.Text = "1  Open Unity 2022.3 with your avatar project (OPEN UNITY HUB).`n2  Bring your asset in, then open VRChat SDK > Show Control Panel.`n3  Sign in to VRChat yourself in that panel. We never see or ask for your password.`n4  Open the Builder tab, check the rank, then click Build and Publish yourself.`n5  Press OPEN MY VRCHAT AVATARS to see it on your account."
+    }
   }
-  $g.Next.Add_Click({ Play-Beep; & $go ($script:Slide + 1) })
-  $g.Back.Add_Click({ Play-Beep; & $go ($script:Slide - 1) })
+  $g.Next.Add_Click({
+    Play-Beep; if ($script:Slide -eq 1) { $script:Skip1 = $true }
+    for ($m = $script:Slide + 1; $m -le 4; $m++) { if (& $reachable $m) { & $go $m; break } }
+  })
+  $g.Back.Add_Click({ Play-Beep; for ($m = $script:Slide - 1; $m -ge 1; $m--) { if (& $reachable $m) { & $go $m; break } } })
+  $g.Dot1.Add_MouseLeftButtonUp({ Play-Beep; & $go 1 }); $g.Dot2.Add_MouseLeftButtonUp({ Play-Beep; & $go 2 })
+  $g.Dot3.Add_MouseLeftButtonUp({ Play-Beep; & $go 3 }); $g.Dot4.Add_MouseLeftButtonUp({ Play-Beep; & $go 4 })
   $g.Recheck.Add_Click({ Play-Beep; [void](Step-Check); & $render1 })
+  $g.Go.Add_Click({ Play-Beep; & $runQueue @($Tools | Where-Object { -not $script:ToolState[$_.Key] } | ForEach-Object { $_.Key }) })
   # SYNC also CATCHES (2026-11-14): after a Google Drive download the script has a break (the browser saves the zip).
   # SYNC looks in Downloads for zips named like our assets (AVI-/ITE-/WOR- codes, or a store name from the list)
   # and COPIES each into the right WAOV folder. The Downloads file is left alone; a zip already there is skipped.
@@ -741,7 +913,7 @@ function Show-Menu {
   & $showCatalog
   $script:QTimer = New-Object System.Windows.Threading.DispatcherTimer; $script:QTimer.Interval = [TimeSpan]::FromSeconds(10)
   $script:QTimer.Add_Tick({ if (-not $script:QItem) { & $checkQueue } }); $script:QTimer.Start(); & $checkQueue
-  $g.Download.Add_Click({ Play-Beep; Write-Log 'WAOV-I50' 'download avatars: opened the waov.art store'; Start-Process 'https://waov.art/perk-center#store' })
+  $g.Download.Add_Click({ Play-Beep; if ($DriveLink -match '^https://drive\.google\.com/') { Write-Log 'WAOV-I50' 'download avatars: opened the base Drive folder'; Start-Process $DriveLink } else { Write-Log 'WAOV-I50' 'download avatars: opened the waov.art store'; Start-Process 'https://waov.art/perk-center#store' } })
   $g.Pair.Add_Click({
     Play-Beep
     try {
@@ -773,26 +945,80 @@ function Show-Menu {
     if ($script:Muted) { $g.Mute.Content = 'SOUND ON'; if ($script:Music) { $script:Music.Stop() } } else { $g.Mute.Content = 'MUTE'; Play-Beep }
   })
 
+  # ---------- 2.0 DRIVE RUN: paste a Google Drive link, drive-fetch.py downloads, unzips, files it and makes the feature image ----------
+  $FetchPy = Join-Path $Launcher 'drive-fetch.py'
+  $StatusFile = Join-Path $AppRoot 'fetch-status.json'
+  if ($DriveLink -match '^https://drive\.google\.com/') { $g.LinkHint.Text = 'DOWNLOAD AVATARS opens our Drive folder. Pick your zips, paste the link here, press RUN.' }
+  $script:FetchProc = $null; $script:FetchFinished = $false
+  $setFetchBar = { param([double]$f) $wd = [math]::Max(0, $g.FetchBox.ActualWidth - 4); $g.FetchFill.Width = [math]::Max(0, [math]::Min(1, $f)) * $wd }
+  $fetchFail = { param([string]$msg, [string]$code) $g.FetchText.Text = "$msg ($code)"; $g.FetchText.Foreground = '#FF5555'; Write-Log $code $msg }
+  $g.Run.Add_Click({
+    Play-Beep
+    $link = $g.LinkBox.Text.Trim()
+    if ($link -notmatch '^https://drive\.google\.com/[A-Za-z0-9/_\-?=&%.#]+$') { & $fetchFail 'Paste a Google Drive link that starts with https://drive.google.com/' 'WAOV-E75'; return }
+    $py = Get-PythonExe
+    if (-not $py -or -not (Test-PyLibs $py)) { & $fetchFail 'Python is not ready. Go to 1 CHECKS and press GO' 'WAOV-E76'; return }
+    if (-not (Test-Path $FetchPy)) { & $fetchFail 'drive-fetch.py is missing from this kit' 'WAOV-E77'; return }
+    New-Item -ItemType Directory -Path $AppRoot -Force | Out-Null
+    if (Test-Path $StatusFile) { Remove-Item $StatusFile -Force -ErrorAction SilentlyContinue }
+    $g.Run.IsEnabled = $false; $g.ResultBox.Visibility = 'Collapsed'; $g.Upload.IsEnabled = $false; $g.UpTile.Visibility = 'Collapsed'
+    $g.FetchText.Foreground = '#FFFF55'; $g.FetchText.Text = 'starting ...'; & $setFetchBar 0.02; $script:FetchFinished = $false
+    $script:FetchProc = Start-Process -FilePath $py -ArgumentList @(('"' + $FetchPy + '"'), '--link', ('"' + $link + '"'), '--assets', ('"' + $AssetsRoot + '"'), '--status', ('"' + $StatusFile + '"'), '--kit', $KitVersion) -PassThru -WindowStyle Hidden
+    Write-Log 'WAOV-I60' 'drive run started'
+    if ($script:FetchTimer) { $script:FetchTimer.Stop() }
+    $script:FetchTimer = New-Object System.Windows.Threading.DispatcherTimer; $script:FetchTimer.Interval = [TimeSpan]::FromMilliseconds(700)
+    $script:FetchTimer.Add_Tick({
+      $st = $null; if (Test-Path $StatusFile) { try { $st = Get-Content $StatusFile -Raw | ConvertFrom-Json } catch { } }
+      if ($st) { & $setFetchBar ([double]$st.pct); $g.FetchText.Text = [string]$st.line }
+      $over = ($st -and $st.done) -or $script:FetchProc.HasExited
+      if (-not $over) { return }
+      $script:FetchTimer.Stop(); $script:FetchFinished = $true; $g.Run.IsEnabled = $true
+      if ($st -and $st.done -and $st.ok -and @($st.items).Count) {
+        & $setFetchBar 1
+        $it = @($st.items)[0]
+        try { $bi = New-Object System.Windows.Media.Imaging.BitmapImage; $bi.BeginInit(); $bi.UriSource = New-Object Uri ([string]$it.feature); $bi.CacheOption = 'OnLoad'; $bi.EndInit(); $g.FeatureImg.Source = $bi } catch { }
+        $n = @($st.items).Count
+        if ($n -eq 1) { $g.ResultText.Text = "[v] Downloaded: $($it.name)`n$($it.kind), filed in $($it.folder)" } else { $g.ResultText.Text = "[v] $n assets downloaded, filed and unpacked.`nShowing $($it.name)." }
+        $g.ResultBox.Visibility = 'Visible'; $g.Upload.IsEnabled = $true
+        $script:Ready4 = $true; Write-Log 'WAOV-I61' "drive run finished, $n asset(s)"
+        & $syncNow; & $paintDots
+      } else {
+        $msg = if ($st -and $st.line) { [string]$st.line } else { 'The download did not finish. Check the link is shared with anyone who has it, then press RUN again.' }
+        & $fetchFail $msg 'WAOV-E78'
+      }
+    })
+    $script:FetchTimer.Start()
+  })
+  $g.Upload.Add_Click({ Play-Beep; $g.UpTile.Visibility = 'Visible'; Write-Log 'WAOV-I62' 'upload tile shown: buyer signs in to VRChat themselves' })
+  $g.UpGo.Add_Click({ Play-Beep; & $go 4 })
+  $g.OpenHub.Add_Click({ Play-Beep; $h = Get-HubExe; if ($h) { Start-Process $h } else { Start-Process 'https://unity.com/download' } })
+  $g.OpenVrc.Add_Click({ Play-Beep; Start-Process 'https://vrchat.com/home/avatars' })
+
   $blink = New-Object System.Windows.Threading.DispatcherTimer; $blink.Interval = [TimeSpan]::FromMilliseconds(500)
   $blink.Add_Tick({ if ($g.Cursor.Opacity -gt 0) { $g.Cursor.Opacity = 0 } else { $g.Cursor.Opacity = 1 } }); $blink.Start()
 
   if (-not $script:ToolState.Count) { [void](Step-Check) }
   & $render1
   $w.Add_ContentRendered({ Fade-In $g.Root })
+  if ($AutoGo) { $w.Add_ContentRendered({ $g.Go.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))) }) }
   if ($SnapDir) {
-    $snap = New-Object System.Windows.Threading.DispatcherTimer; $snap.Interval = [TimeSpan]::FromSeconds(2.6)
+    $script:snap = New-Object System.Windows.Threading.DispatcherTimer; $script:snap.Interval = [TimeSpan]::FromSeconds(2.6)
     $script:snapStep = 0
-    $snap.Add_Tick({
-      $script:snapStep++
-      if ($script:snapStep -eq 1) { Save-Snap $w 'menu-slider1.png'; & $go 2; & $syncNow }
-      elseif ($script:snapStep -eq 2) {
-        Save-Snap $w 'menu-slider2.png'
-        if ($script:HasMap) { & $go 3; if ($script:AviChoices.Count) { $g.AviList.SelectedIndex = 0 }; if ($script:ItemChoices.Count) { $g.ItemList.SelectedIndex = 0 } }
-        else { $snap.Stop(); $w.Close() }
-      }
-      elseif ($script:snapStep -eq 3) { Save-Snap $w 'menu-slider3.png'; $snap.Stop(); $w.Close() }
+    $script:Acts = @(
+      { Save-Snap $w $(if ($AutoGo) { 'menu-1-installing.png' } else { 'menu-1-checks.png' }) },
+      { Save-Snap $w 'menu-1-done.png'; & $go 2; & $syncNow
+        if ($TestLink) { $g.LinkBox.Text = $TestLink; $g.Run.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))) } },
+      { Save-Snap $w 'menu-2-downloads.png'; if ($g.Upload.IsEnabled) { $g.Upload.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))) } },
+      { Save-Snap $w 'menu-2-uptile.png'; if ($script:HasMap) { & $go 3; if ($script:AviChoices.Count) { $g.AviList.SelectedIndex = 0 }; if ($script:ItemChoices.Count) { $g.ItemList.SelectedIndex = 0 } } else { & $go 4 } },
+      { if ($script:HasMap) { Save-Snap $w 'menu-3-map.png' }; & $go 4 },
+      { Save-Snap $w 'menu-4-vrchat.png'; $script:snap.Stop(); $w.Close() }
+    )
+    $script:snap.Add_Tick({
+      if ($script:snapStep -ge 1 -and $script:QTimer2 -and $script:QTimer2.IsEnabled) { return }                     # wait for the install queue
+      if ($script:snapStep -ge 2 -and $script:FetchProc -and -not $script:FetchFinished) { return }                   # wait for the Drive run
+      & $script:Acts[$script:snapStep]; $script:snapStep++
     })
-    $snap.Start()
+    $script:snap.Start()
   }
   [void]$w.ShowDialog()
 }

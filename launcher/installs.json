@@ -1,0 +1,9 @@
+{
+  "note": "Winget ids only. The launcher refuses any id outside its built-in allow-list (WAOV-E16). Ships inside the signed kit.",
+  "tools": [
+    { "key": "CreatorCompanion", "winget": "VRChat.CreatorCompanion" },
+    { "key": "UnityHub", "winget": "Unity.UnityHub" },
+    { "key": "Blender", "winget": "BlenderFoundation.Blender" },
+    { "key": "Python", "winget": "Python.Python.3.12" }
+  ]
+}

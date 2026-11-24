@@ -5,3 +5,4 @@ dist/
 art-src/contact-sheet.png
 backups/
 *.last-save
+__pycache__/
